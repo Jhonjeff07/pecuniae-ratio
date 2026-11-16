@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Cada persona solo puede leer y escribir SUS propios datos:
+    // users/{su id}/meses/{AAAA-MM}  y  users/{su id}/perfil/deudas
+    match /users/{userId}/meses/{mes} {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null && request.auth.uid == userId
+                            && mes.matches('^[0-9]{4}-[0-9]{2}$');
+    }
+    match /users/{userId}/perfil/{docId} {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null && request.auth.uid == userId && docId == 'deudas';
+    }
+    // Todo lo demás está cerrado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
