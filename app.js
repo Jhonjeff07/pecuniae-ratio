@@ -8,6 +8,8 @@ import { mIdx, idxKey, daysIn, FREQ, factor, tasaMes, cardState, creditState, co
 
 // ---------- Utilidades ----------
 const $ = s => document.querySelector(s);
+// La hormiga que camina mientras carga (viene en index.html)
+const LOADER = (document.querySelector("#root")||{}).innerHTML || "";
 const fmt = new Intl.NumberFormat("es-CO",{style:"currency",currency:"COP",maximumFractionDigits:0});
 const fmtN = new Intl.NumberFormat("es-CO",{maximumFractionDigits:0});
 const money = v => fmt.format(Math.round(v||0)).replace(/\u00a0/g," ");
@@ -53,7 +55,7 @@ function normalize(m){
   return m;
 }
 // Tarjetas, créditos y pagos viven en un documento aparte, porque duran varios meses.
-function blankPerfil(){ return { v:5, inicio: thisMonth(), tarjetas:[], creditos:[], pagos:[], ahorros:[], metas:[], prestamos:[], guia:null, topes:{} }; }
+function blankPerfil(){ return { v:5, inicio: thisMonth(), tarjetas:[], creditos:[], pagos:[], ahorros:[], metas:[], prestamos:[], guia:null, topes:{}, privacidad:null }; }
 function normalizePerfil(p){
   const mig = p.ahorros==null;
   const b=blankPerfil(); for(const k of Object.keys(b)) if(p[k]==null) p[k]=b[k];
@@ -135,11 +137,14 @@ if(!configured){
   onAuthStateChanged(auth, async user=>{
     S.user = user;
     if(!user){ renderLogin(); return; }
-    $("#root").innerHTML = `<div class="screen"><p class="status">Cargando tus meses…</p></div>`;
+    $("#root").innerHTML = LOADER.replace(">Cargando<",">Abriendo tus cuentas<");
     try{ await loadMonths(); }
     catch(e){ console.error(e); $("#root").innerHTML = `<div class="screen"><div class="login"><h1>No se pudieron cargar tus datos</h1><p>Revisa tu conexión y recarga la página. Si eres quien publicó la app, revisa que las reglas de Firestore estén publicadas (Paso 3 de la guía).</p><button class="btn" onclick="location.reload()">Recargar</button></div></div>`; return; }
     if(!Object.keys(S.months).length){ const k=thisMonth(); S.months[k]=blankMonth(k); save(k); }
-    if(!S.perfil){ S.perfil=blankPerfil(); const ks0=Object.keys(S.months).sort(); S.perfil.inicio=ks0[0]; savePerfil(); }
+    if(!S.perfil){ S.perfil=blankPerfil(); const ks0=Object.keys(S.months).sort(); S.perfil.inicio=ks0[0];
+      // Cuenta nueva: aceptó el aviso al entrar con Google en la pantalla de inicio
+      if(sinDatos()) S.perfil.privacidad={acepto:true,fecha:todayISO(),version:1,como:"registro"};
+      savePerfil(); }
     if(!S.months[thisMonth()] && Object.keys(S.months).sort().pop() < thisMonth()){ newMonth(true); }
     const ks = Object.keys(S.months).sort();
     S.cur = S.months[thisMonth()] ? thisMonth() : ks[ks.length-1];
@@ -192,6 +197,7 @@ function renderShell(){
         <select id="monthSel" aria-label="Mes"></select>
         <button class="btn small" data-act="newMonth">Nuevo mes</button>
       </div>
+      <button class="btn small guiabtn" data-act="gAbrir">🧭 Guía</button>
       <button class="avatar helpbtn" data-act="help" aria-label="Ayuda">?</button>
       <button class="avatar" data-act="menu" aria-label="Tu cuenta">${u.photoURL?`<img src="${esc(u.photoURL)}" alt="" referrerpolicy="no-referrer">`:esc(ini)}</button>
       <span class="status" id="status" style="flex-basis:100%"></span>
@@ -1052,7 +1058,7 @@ function tilePrestamos(c){
 
 // ---------- Ayuda ----------
 const AYUDA = [
- {id:"inicio", t:"¿Por dónde empiezo?", h:`<p>Lo más fácil es tocar <b>Hacer la guía paso a paso</b>, aquí arriba: te pregunto todo en orden. Si la dejas a medias, te espero en Hoy con un aviso para <b>seguir donde ibas</b>.</p><p>Si prefieres hacerlo tú:</p><ol><li><b>Ingresos:</b> lo que te entra (sueldo, trabajos extra…).</li><li><b>Gastos:</b> lo que pagas siempre (arriendo, servicios, mercado…).</li><li><b>Tarjetas, Créditos y Préstamos:</b> lo que debes.</li><li><b>Ahorros y Metas:</b> lo que tienes guardado y para qué.</li></ol><p>Después, cada día, solo anotas lo que gastas en <b>Hoy</b>.</p>`},
+ {id:"inicio", t:"¿Por dónde empiezo?", h:`<p>Lo más fácil es usar la <b>🧭 Guía</b> (el botón de arriba, junto al ?): te pregunto todo en orden. Dentro de la guía puedes tocar cualquier paso para volver a él. Si la dejas a medias, te espero en Hoy con un aviso para <b>seguir donde ibas</b>.</p><p>Si prefieres hacerlo tú:</p><ol><li><b>Ingresos:</b> lo que te entra (sueldo, trabajos extra…).</li><li><b>Gastos:</b> lo que pagas siempre (arriendo, servicios, mercado…).</li><li><b>Tarjetas, Créditos y Préstamos:</b> lo que debes.</li><li><b>Ahorros y Metas:</b> lo que tienes guardado y para qué.</li></ol><p>Después, cada día, solo anotas lo que gastas en <b>Hoy</b>.</p>`},
  {id:"guardar", t:"¿Cómo sé que se guardó?", h:`<p>Todo se guarda solo, en el momento en que escribes. Arriba siempre ves el estado:</p><ul><li><b class="okc">✓ Todo guardado en tu cuenta</b>: listo.</li><li><b>Guardando…</b>: espera un segundo.</li><li><b>Sin internet</b>: se guarda en el celular y se sube cuando vuelva la conexión.</li></ul><p>Cuando terminas de llenar algo y tocas <b>Listo ✓</b>, el cuadro se cierra y te muestra un resumen con la confirmación.</p><p>Tus datos quedan en tu cuenta de Google: si entras desde otro celular o computador, ahí están.</p>`},
  {id:"hoy", t:"¿Qué significa “Hoy puedes gastar”?", h:`<p>Es lo que puedes gastar hoy sin pasarte del mes:</p><p><b>(lo que entra − gastos fijos − pagos de deudas − ahorro) ÷ días que faltan</b>, menos lo que ya gastaste hoy.</p><p>Si un día gastas menos, los días siguientes tienes un poco más. Si gastas de más, baja. Los cuadritos de los días se ponen verdes cuando no te pasas y rojos cuando sí.</p><p>En <b>Cómo va todo</b> ves un resumen de tu presupuesto, gastos hormiga, deudas, préstamos, ahorros y metas. Toca cualquiera para ver el detalle.</p>`},
  {id:"ingresos", t:"Ingresos", h:`<p>Anota lo que te entra y <b>cada cuánto</b>: la app lo convierte a valor mensual (por ejemplo, 500.000 quincenal = 1.000.000 al mes).</p><ul><li><b>Fijo:</b> siempre es el mismo valor.</li><li><b>Variable:</b> cambia. Pon lo que esperas; lo que te entre de más anótalo en Hoy como <b>Ingreso extra</b>.</li><li><b>Una sola vez:</b> solo cuenta en el mes en que llega (una prima, por ejemplo).</li></ul>`},
@@ -1091,14 +1097,15 @@ function renderHelpSheet(el){
 // ---------- Ventanas (privacidad, copia, calendario) ----------
 function renderModal(){
   const el=$("#modal"); if(!el) return;
+  if(S.user && S.perfil && !S.perfil.privacidad){ S.help=null; S.dlg={kind:"privAcepta"}; }
   const abierto = !!(S.help || S.dlg);
   document.body.classList.toggle("modal-open", abierto);
   if(!abierto){ el.innerHTML=""; return; }
   if(S.help){ renderHelpSheet(el); return; }
-  const d=S.dlg, titulo={privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
-  const cuerpo={privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
+  const d=S.dlg, titulo={privAcepta:"Antes de seguir: tu privacidad",privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
+  const cuerpo={privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
   el.innerHTML = `<div class="modal"><div class="sheet" role="dialog" aria-modal="true" aria-label="${titulo}">
-    <div class="sheet-h"><h2>${titulo}</h2><button class="icon-btn" data-act="helpClose" aria-label="Cerrar">✕</button></div>
+    <div class="sheet-h"><h2>${titulo}</h2>${d.kind==="privAcepta"?"":`<button class="icon-btn" data-act="helpClose" aria-label="Cerrar">✕</button>`}</div>
     <div class="sheet-b">${cuerpo?cuerpo(d):""}</div></div></div>`;
 }
 
@@ -1112,6 +1119,21 @@ const PRIVACIDAD_HTML = `<div class="hq-b">
   <p><b>Si dejas de usarla.</b> Tus datos quedan guardados hasta que los borres.</p>
   <p class="subtle">Al entrar con Google aceptas este aviso.</p>
 </div>`;
+
+function dlgPrivAcepta(){
+  return `<p>Pecuniae Ratio estrenó su <b>aviso de privacidad</b>. Como entraste antes de que existiera, te lo muestro una sola vez. En resumen:</p>
+    <ul class="hq-b">
+      <li>Se guarda tu nombre, correo y foto de Google, y lo que escribes en la app.</li>
+      <li>Solo sirve para mostrarte tu presupuesto. No se vende ni se comparte, y no se usa para publicidad.</li>
+      <li>Otras personas que usan la app no pueden ver tus datos. Quien administra la app tiene acceso técnico y se compromete a no consultarlos.</li>
+      <li>Puedes descargar una copia o borrar todo cuando quieras, desde el menú de tu foto.</li>
+    </ul>
+    <details class="hq-item"><summary>Leer el aviso completo</summary>${PRIVACIDAD_HTML}</details>
+    <div class="gbtns" style="margin:14px 0 0;flex-direction:column;align-items:stretch">
+      <button class="btn primary big" data-act="privAcepto">Entendido, acepto</button>
+      <button class="btn ghost" data-act="privNo">No acepto, cerrar sesión</button></div>
+    <p class="subtle" style="margin-top:8px">Si no aceptas, tus datos siguen guardados y no se usan. Puedes volver a entrar y aceptar, o entrar para borrarlos.</p>`;
+}
 
 // 3. Copia de seguridad y restaurar
 function descargarArchivo(nombre, contenido, tipo){
@@ -1153,7 +1175,7 @@ async function restaurarCopia(){
   const c=S.dlg.copia, meses=S.dlg.meses;
   for(const k of Object.keys(S.months)){ if(!meses.includes(k)){ clearTimeout(pending.get(k)); pending.delete(k); try{ await deleteDoc(monthDoc(k)); }catch(e){ console.error(e); } } }
   S.months={}; for(const k of meses){ const mm=JSON.parse(JSON.stringify(c.meses[k])); mm.mes=k; S.months[k]=normalize(mm); save(k); }
-  S.perfil=normalizePerfil(JSON.parse(JSON.stringify(c.perfil))); if(!S.perfil.inicio) S.perfil.inicio=meses.sort()[0]; savePerfil();
+  const priv=S.perfil.privacidad; S.perfil=normalizePerfil(JSON.parse(JSON.stringify(c.perfil))); if(!S.perfil.privacidad) S.perfil.privacidad=priv; if(!S.perfil.inicio) S.perfil.inicio=meses.sort()[0]; savePerfil();
   if(!S.months[thisMonth()] && meses.sort().slice(-1)[0] < thisMonth()) newMonth(true);
   S.autoMes=null; S.cur = S.months[thisMonth()] ? thisMonth() : Object.keys(S.months).sort().pop();
   S.dlg=null; S.open=new Set(); S.guia=null; S.tab="hoy"; renderModal(); render(); confirmSaved("Copia restaurada");
@@ -1263,7 +1285,8 @@ function gDefaults(kind){
 function vGuia(){
   const g=S.guia, paso=PASOS[g.paso], m=S.months[thisMonth()], n=nombreCorto(), t=g.tmp;
   const c=calc(m);
-  const prog = g.paso>0 && g.paso<6 ? `<div class="gprog">${["ingresos","gastos","deudas","ahorros","metas"].map((x,i)=>`<span class="${i+1<g.paso?"done":i+1===g.paso?"on":""}">${PASO_L[x]}</span>`).join("")}</div>` : "";
+  const prog = g.paso>0 ? `<div class="gprog" role="tablist" aria-label="Pasos de la guía">${["ingresos","gastos","deudas","ahorros","metas"].map((x,i)=>`<button type="button" data-act="gIr" data-v="${i+1}" class="${i+1<g.paso?"done":i+1===g.paso?"on":""}" ${i+1===g.paso?'aria-current="step"':""}>${PASO_L[x]}</button>`).join("")}</div>
+    <p class="subtle gprog-tip">Toca cualquier paso para ir a él y agregar o cambiar algo. No tienes que salir de la guía.</p>` : "";
   const saltar = `<button class="linkbtn" data-act="gNext">Saltar este paso</button>`;
   const otro = (pregunta, kind, no) => `${bub(pregunta)}<div class="gbtns"><button class="btn primary" data-act="gForm" data-v="${kind}">Sí, agregar otro</button><button class="btn" data-act="gDone">${no}</button></div>`;
   const cont = label => `<div class="gbtns"><button class="btn primary big" data-act="gNext">${label} →</button></div>`;
@@ -1402,11 +1425,11 @@ function vGuia(){
         </div></div>`
       + (c.libre<0 ? bub(`⚠️ Ojo: tus compromisos superan lo que te entra por <b>${money(-c.libre)}</b>. Revisa tus gastos o deudas; en Hoy te lo voy a recordar.`) : "")
       + bub(`Desde ahora, lo único que tienes que hacer es <b>anotar lo que gastas cada día</b> en la pantalla Hoy. Para cosas pequeñas, como un tinto, usa los botones de <b>gasto hormiga</b>.`)
-      + bub(`Si tienes una duda, toca el botón <b>?</b> de arriba. Ahí también puedes repetir esta guía cuando quieras.`)
+      + bub(`¿Te faltó algo? Toca cualquier paso de arriba para volver a él. Y cuando ya estés en tu presupuesto, el botón <b>🧭 Guía</b> de arriba te trae de vuelta aquí cuando quieras. Para dudas, toca el <b>?</b>.`)
       + `<div class="gbtns"><button class="btn primary big" data-act="gFin">Ir a mi presupuesto</button></div>`;
   }
   return `<section class="panel guia">
-    <div class="ghead"><b>Guía paso a paso</b><button class="btn small ghost" data-act="gExit">Salir de la guía</button></div>
+    <div class="ghead">${g.paso>1&&g.paso<PASOS.length-1?`<button class="btn small" data-act="gIr" data-v="${g.paso-1}">‹ Paso anterior</button>`:`<b>Guía paso a paso</b>`}<button class="btn small ghost" data-act="gExit">Salir de la guía</button></div>
     ${prog}<div class="gbody">${body}</div></section>`;
 }
 // Estado de la guía en el perfil: null = nunca la vio · {hecho:true} = terminada · {descartada:true} = no la quiere
@@ -1501,6 +1524,8 @@ async function accionesNuevas(act,b,e,m){
     case "fold": S.open.delete(b.dataset.id); render(); confirmSaved(b.dataset.l||"Guardado"); return true;
     case "help": S.menu=false; renderMenu(); S.dlg=null; S.help=b.dataset.v||"inicio"; renderModal(); return true;
     case "helpClose": S.help=null; S.dlg=null; renderModal(); return true;
+    case "privAcepto": S.perfil.privacidad={acepto:true,fecha:todayISO(),version:1,como:"aviso"}; savePerfil(); S.dlg=null; renderModal(); toast("Gracias. Puedes leer el aviso cuando quieras desde el menú de tu foto."); return true;
+    case "privNo": flushAll(); S.dlg=null; S.menu=false; await signOut(auth); return true;
     case "privacidad": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"privacidad"}; renderModal(); return true;
     case "cal": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"calendario"}; renderModal(); return true;
     case "calTodo": { const evs=eventosCalendario(); if(!evs.length) return true; descargarArchivo("pagos-pecuniae-ratio.ics", icsTexto(evs), "text/calendar;charset=utf-8"); toast(`Descargaste ${evs.length} fecha${evs.length===1?"":"s"}. Ábrelo para agregarlas a tu calendario.`); return true; }
@@ -1508,10 +1533,13 @@ async function accionesNuevas(act,b,e,m){
     case "copiaElegir": { const f=$("#copiaFile"); if(f){ f.value=""; f.click(); } return true; }
     case "copiaRestaurar": if(S.dlg && S.dlg.kind==="restaurar") await restaurarCopia(); return true;
     case "gStart": S.help=null; S.menu=false; S.guia={paso:0,form:null,done:false,tmp:{}}; render(); window.scrollTo({top:0}); return true;
+    case "gAbrir": { if(S.guia) return true; S.help=null; S.menu=false; renderMenu();
+      const n = pasoGuardado() || (S.perfil.guia && S.perfil.guia.hecho ? 1 : 0);
+      const g2={paso:n,form:n?autoForm(PASOS[n]):null,done:false,tmp:{}}; if(g2.form) g2.tmp=gDefaults(g2.form); S.guia=g2; S.tab="hoy"; render(); window.scrollTo({top:0}); return true; }
     case "gSeguir": { S.help=null; S.menu=false; const n=pasoGuardado()||1; const g2={paso:n,form:autoForm(PASOS[n]),done:false,tmp:{}}; if(g2.form) g2.tmp=gDefaults(g2.form); S.guia=g2; S.tab="hoy"; render(); window.scrollTo({top:0}); return true; }
-    case "gNo": S.perfil.guia={hecho:false,descartada:true}; savePerfil(); render(); toast("Listo. Si cambias de opinión, toca el botón ? de arriba."); return true;
+    case "gNo": S.perfil.guia={hecho:false,descartada:true}; savePerfil(); render(); toast("Listo. Si cambias de opinión, toca 🧭 Guía, arriba."); return true;
     case "gExit": { const ap=S.guia?S.guia.paso:0; S.guia=null; if(!S.perfil.guia) S.perfil.guia={hecho:false,paso:ap}; savePerfil(); S.tab="hoy"; render();
-      toast(guiaPendiente()&&pasoGuardado() ? `Lo que llenaste quedó guardado. Cuando quieras, sigues en ${PASO_L[PASOS[pasoGuardado()]]} desde Hoy.` : "Lo que alcanzaste a llenar quedó guardado. Puedes retomar la guía con el botón ?."); return true; }
+      toast(guiaPendiente()&&pasoGuardado() ? `Lo que llenaste quedó guardado. Cuando quieras, sigues en ${PASO_L[PASOS[pasoGuardado()]]} con 🧭 Guía, arriba.` : "Lo que alcanzaste a llenar quedó guardado. Vuelve cuando quieras con 🧭 Guía, arriba."); return true; }
     case "addPPago": {
       const p=S.perfil.prestamos.find(x=>x.id===b.dataset.id); if(!p) return true;
       const v=parseMoney($(`#pp-${p.id}-valor`).value), fecha=$(`#pp-${p.id}-fecha`).value||todayISO(), chk=$(`#pp-${p.id}-presu`);
@@ -1525,6 +1553,7 @@ async function accionesNuevas(act,b,e,m){
   if(!g || !act.startsWith("g")) return false;
   gSync(); g.justSaved=false;
   switch(act){
+    case "gIr": { const n=Math.max(1,Math.min(PASOS.length-2,+b.dataset.v||1)); g.paso=n; g.done=false; g.tmp={}; g.form=autoForm(PASOS[n]); if(g.form) g.tmp=gDefaults(g.form); marcarPaso(n); break; }
     case "gNext": g.paso=Math.min(PASOS.length-1,g.paso+1); g.done=false; g.tmp={}; g.form=autoForm(PASOS[g.paso]); if(g.form) g.tmp=gDefaults(g.form); marcarPaso(g.paso); break;
     case "gDone": g.done=true; g.form=null; g.tmp={}; break;
     case "gForm": g.form=b.dataset.v; g.tmp=gDefaults(g.form); break;
@@ -1539,7 +1568,7 @@ async function accionesNuevas(act,b,e,m){
       saveFor(coll); toast("Quitado."); break; }
     default: return false;
   }
-  render(); if(["gNext","gDone","gForm","gCancel"].includes(act)) window.scrollTo({top:0});
+  render(); if(["gNext","gIr","gDone","gForm","gCancel"].includes(act)) window.scrollTo({top:0});
   return true;
 }
 
