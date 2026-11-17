@@ -7,7 +7,7 @@ Vas a usar dos servicios gratuitos:
 
 No necesitas tarjeta de crédito ni instalar programas. Hazlo desde un computador; toma más o menos una hora la primera vez.
 
-Antes de empezar, **descomprime el archivo .zip**. Debes ver estos archivos: `index.html`, `app.js`, `engine.js`, `ahorros.js`, `firebase-config.js`, `sw.js`, `manifest.webmanifest`, `firestore.rules`, esta guía y una carpeta `icons`.
+Antes de empezar, **descomprime el archivo .zip**. Debes ver estos archivos: `index.html`, `app.js`, `engine.js`, `ahorros.js`, `prestamos.js`, `firebase-config.js`, `sw.js`, `manifest.webmanifest`, `firestore.rules`, esta guía y una carpeta `icons`.
 
 > **¿Ya habías publicado la versión anterior?** Ve directo a la sección *Actualizar a una versión nueva* al final.
 
@@ -137,7 +137,7 @@ Estos límites los fija Google y GitHub y pueden cambiar con el tiempo. En **Fir
 ## Actualizar a una versión nueva
 
 1. En tu repositorio de GitHub toca **Add file → Upload files** y arrastra los archivos nuevos (todos menos `firebase-config.js`, para no perder tu configuración). GitHub reemplaza los que tienen el mismo nombre. Toca **Commit changes**.
-2. Si la versión nueva trae un `firestore.rules` distinto, pégalo otra vez en Firebase → Firestore Database → Reglas → **Publicar** (Paso 3). **Esta versión sí lo cambió**: hazlo, o la app no podrá guardar tus tarjetas y créditos.
+2. Si la versión nueva trae un `firestore.rules` distinto, pégalo otra vez en Firebase → Firestore Database → Reglas → **Publicar** (Paso 3). Las reglas no cambian desde la versión con tarjetas y créditos.
 3. Espera un par de minutos, cierra la app y ábrela de nuevo.
 
 ## Cómo calcula la app tus deudas
@@ -209,6 +209,7 @@ Estos límites los fija Google y GitHub y pueden cambiar con el tiempo. En **Fir
 | `app.js` | Pantallas y guardado. |
 | `engine.js` | Los cálculos de tarjetas y créditos (cuotas, intereses, pago mínimo, lo que debes). |
 | `ahorros.js` | Los cálculos de ahorros, CDT y metas. |
+| `prestamos.js` | Los cálculos de préstamos con personas (le debo / me deben). |
 | `firebase-config.js` | La conexión con tu proyecto de Firebase (lo único que debes editar). |
 | `firestore.rules` | Las reglas de seguridad que pegas en Firebase (no hace falta subirlo a GitHub, pero no estorba). |
 | `sw.js` | Permite que la app abra sin internet y se instale. |
