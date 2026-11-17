@@ -1052,7 +1052,7 @@ function tilePrestamos(c){
 
 // ---------- Ayuda ----------
 const AYUDA = [
- {id:"inicio", t:"¿Por dónde empiezo?", h:`<p>Lo más fácil es tocar <b>Hacer la guía paso a paso</b>, aquí arriba: te pregunto todo en orden.</p><p>Si prefieres hacerlo tú:</p><ol><li><b>Ingresos:</b> lo que te entra (sueldo, trabajos extra…).</li><li><b>Gastos:</b> lo que pagas siempre (arriendo, servicios, mercado…).</li><li><b>Tarjetas, Créditos y Préstamos:</b> lo que debes.</li><li><b>Ahorros y Metas:</b> lo que tienes guardado y para qué.</li></ol><p>Después, cada día, solo anotas lo que gastas en <b>Hoy</b>.</p>`},
+ {id:"inicio", t:"¿Por dónde empiezo?", h:`<p>Lo más fácil es tocar <b>Hacer la guía paso a paso</b>, aquí arriba: te pregunto todo en orden. Si la dejas a medias, te espero en Hoy con un aviso para <b>seguir donde ibas</b>.</p><p>Si prefieres hacerlo tú:</p><ol><li><b>Ingresos:</b> lo que te entra (sueldo, trabajos extra…).</li><li><b>Gastos:</b> lo que pagas siempre (arriendo, servicios, mercado…).</li><li><b>Tarjetas, Créditos y Préstamos:</b> lo que debes.</li><li><b>Ahorros y Metas:</b> lo que tienes guardado y para qué.</li></ol><p>Después, cada día, solo anotas lo que gastas en <b>Hoy</b>.</p>`},
  {id:"guardar", t:"¿Cómo sé que se guardó?", h:`<p>Todo se guarda solo, en el momento en que escribes. Arriba siempre ves el estado:</p><ul><li><b class="okc">✓ Todo guardado en tu cuenta</b>: listo.</li><li><b>Guardando…</b>: espera un segundo.</li><li><b>Sin internet</b>: se guarda en el celular y se sube cuando vuelva la conexión.</li></ul><p>Cuando terminas de llenar algo y tocas <b>Listo ✓</b>, el cuadro se cierra y te muestra un resumen con la confirmación.</p><p>Tus datos quedan en tu cuenta de Google: si entras desde otro celular o computador, ahí están.</p>`},
  {id:"hoy", t:"¿Qué significa “Hoy puedes gastar”?", h:`<p>Es lo que puedes gastar hoy sin pasarte del mes:</p><p><b>(lo que entra − gastos fijos − pagos de deudas − ahorro) ÷ días que faltan</b>, menos lo que ya gastaste hoy.</p><p>Si un día gastas menos, los días siguientes tienes un poco más. Si gastas de más, baja. Los cuadritos de los días se ponen verdes cuando no te pasas y rojos cuando sí.</p><p>En <b>Cómo va todo</b> ves un resumen de tu presupuesto, gastos hormiga, deudas, préstamos, ahorros y metas. Toca cualquiera para ver el detalle.</p>`},
  {id:"ingresos", t:"Ingresos", h:`<p>Anota lo que te entra y <b>cada cuánto</b>: la app lo convierte a valor mensual (por ejemplo, 500.000 quincenal = 1.000.000 al mes).</p><ul><li><b>Fijo:</b> siempre es el mismo valor.</li><li><b>Variable:</b> cambia. Pon lo que esperas; lo que te entre de más anótalo en Hoy como <b>Ingreso extra</b>.</li><li><b>Una sola vez:</b> solo cuenta en el mes en que llega (una prima, por ejemplo).</li></ul>`},
@@ -1079,7 +1079,8 @@ function renderHelpSheet(el){
   el.innerHTML = `<div class="modal"><div class="sheet" role="dialog" aria-modal="true" aria-label="Ayuda">
     <div class="sheet-h"><h2>Ayuda</h2><button class="icon-btn" data-act="helpClose" aria-label="Cerrar ayuda">✕</button></div>
     <div class="sheet-b">
-      <button class="btn primary big" data-act="gStart">🧭 Hacer la guía paso a paso</button>
+      ${pasoGuardado() ? `<button class="btn primary big" data-act="gSeguir">🧭 Seguir la guía (vas en ${PASO_L[PASOS[pasoGuardado()]]})</button>
+      <p class="subtle" style="margin:6px 0 0"><button class="linkbtn" data-act="gStart">Empezar la guía de nuevo</button></p>` : `<button class="btn primary big" data-act="gStart">🧭 Hacer la guía paso a paso</button>`}
       <p class="subtle" style="margin:14px 0 6px">O toca un tema:</p>
       ${AYUDA.map(a=>`<details class="hq-item" id="h-${a.id}" ${a.id===S.help?"open":""}><summary>${a.t}</summary><div class="hq-b">${a.h}</div></details>`).join("")}
       <div class="gbtns" style="margin:18px 0 0;flex-wrap:wrap"><button class="btn ghost" data-act="privacidad">Aviso de privacidad</button></div>
@@ -1408,10 +1409,26 @@ function vGuia(){
     <div class="ghead"><b>Guía paso a paso</b><button class="btn small ghost" data-act="gExit">Salir de la guía</button></div>
     ${prog}<div class="gbody">${body}</div></section>`;
 }
+// Estado de la guía en el perfil: null = nunca la vio · {hecho:true} = terminada · {descartada:true} = no la quiere
+// {hecho:false, paso:N} = la dejó a medias en el paso N (1 a 5)
+const guiaPendiente = () => { const g=S.perfil.guia; return !!g && !g.hecho && !g.descartada; };
+const pasoGuardado = () => { const g=S.perfil.guia; return guiaPendiente() && g.paso>=1 && g.paso<=5 ? g.paso : 0; };
+function marcarPaso(n){
+  const g=S.perfil.guia; if(g && g.hecho) return;
+  if(n>=PASOS.length-1){ S.perfil.guia={hecho:true,fecha:todayISO()}; savePerfil(); return; }
+  if(g && !g.descartada && g.paso===n) return;
+  S.perfil.guia={hecho:false,paso:n}; savePerfil();
+}
 function guiaBanner(){
-  if(S.perfil.guia) return "";
-  return `<section class="panel gbanner">${bub("¿Primera vez por aquí? Te puedo guiar paso a paso para armar tu presupuesto en unos minutos.")}
+  if(!S.perfil.guia) return `<section class="panel gbanner">${bub("¿Primera vez por aquí? Te puedo guiar paso a paso para armar tu presupuesto en unos minutos.")}
     <div class="gbtns"><button class="btn primary" data-act="gStart">Sí, guíame</button><button class="btn" data-act="gNo">No, gracias</button></div></section>`;
+  if(!guiaPendiente()) return "";
+  const n=pasoGuardado();
+  if(n) return `<section class="panel gbanner">${bub(`Te quedaste en <b>${PASO_L[PASOS[n]]}</b> (paso ${n} de 5). ¿Seguimos donde ibas? Lo que ya llenaste sigue guardado.`)}
+    <div class="gbtns"><button class="btn primary" data-act="gSeguir">Sí, seguir</button><button class="btn" data-act="gNo">Ya no la necesito</button></div>
+    <p class="subtle" style="margin:6px 0 0"><button class="linkbtn" data-act="gStart">Empezar la guía de nuevo</button></p></section>`;
+  return `<section class="panel gbanner">${bub("¿Terminamos de armar tu presupuesto con la guía? Lo que ya llenaste sigue guardado.")}
+    <div class="gbtns"><button class="btn primary" data-act="gStart">Sí, guíame</button><button class="btn" data-act="gNo">Ya no la necesito</button></div></section>`;
 }
 function guardarGuia(kind){
   const t=S.guia.tmp, m=S.months[thisMonth()], id=uid(), dia=Math.max(0,Math.min(31,parseMoney(t.diaPago)))||"";
@@ -1491,8 +1508,10 @@ async function accionesNuevas(act,b,e,m){
     case "copiaElegir": { const f=$("#copiaFile"); if(f){ f.value=""; f.click(); } return true; }
     case "copiaRestaurar": if(S.dlg && S.dlg.kind==="restaurar") await restaurarCopia(); return true;
     case "gStart": S.help=null; S.menu=false; S.guia={paso:0,form:null,done:false,tmp:{}}; render(); window.scrollTo({top:0}); return true;
-    case "gNo": S.perfil.guia={hecho:false,visto:true}; savePerfil(); render(); toast("Si cambias de opinión, toca el botón ? de arriba."); return true;
-    case "gExit": S.guia=null; if(!S.perfil.guia) S.perfil.guia={hecho:false,visto:true}; savePerfil(); S.tab="hoy"; render(); toast("Lo que alcanzaste a llenar quedó guardado. Puedes retomar la guía con el botón ?."); return true;
+    case "gSeguir": { S.help=null; S.menu=false; const n=pasoGuardado()||1; const g2={paso:n,form:autoForm(PASOS[n]),done:false,tmp:{}}; if(g2.form) g2.tmp=gDefaults(g2.form); S.guia=g2; S.tab="hoy"; render(); window.scrollTo({top:0}); return true; }
+    case "gNo": S.perfil.guia={hecho:false,descartada:true}; savePerfil(); render(); toast("Listo. Si cambias de opinión, toca el botón ? de arriba."); return true;
+    case "gExit": { const ap=S.guia?S.guia.paso:0; S.guia=null; if(!S.perfil.guia) S.perfil.guia={hecho:false,paso:ap}; savePerfil(); S.tab="hoy"; render();
+      toast(guiaPendiente()&&pasoGuardado() ? `Lo que llenaste quedó guardado. Cuando quieras, sigues en ${PASO_L[PASOS[pasoGuardado()]]} desde Hoy.` : "Lo que alcanzaste a llenar quedó guardado. Puedes retomar la guía con el botón ?."); return true; }
     case "addPPago": {
       const p=S.perfil.prestamos.find(x=>x.id===b.dataset.id); if(!p) return true;
       const v=parseMoney($(`#pp-${p.id}-valor`).value), fecha=$(`#pp-${p.id}-fecha`).value||todayISO(), chk=$(`#pp-${p.id}-presu`);
@@ -1506,7 +1525,7 @@ async function accionesNuevas(act,b,e,m){
   if(!g || !act.startsWith("g")) return false;
   gSync(); g.justSaved=false;
   switch(act){
-    case "gNext": g.paso=Math.min(PASOS.length-1,g.paso+1); g.done=false; g.tmp={}; g.form=autoForm(PASOS[g.paso]); if(g.form) g.tmp=gDefaults(g.form); break;
+    case "gNext": g.paso=Math.min(PASOS.length-1,g.paso+1); g.done=false; g.tmp={}; g.form=autoForm(PASOS[g.paso]); if(g.form) g.tmp=gDefaults(g.form); marcarPaso(g.paso); break;
     case "gDone": g.done=true; g.form=null; g.tmp={}; break;
     case "gForm": g.form=b.dataset.v; g.tmp=gDefaults(g.form); break;
     case "gCancel": g.form=null; g.tmp={}; break;
