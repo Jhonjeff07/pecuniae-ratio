@@ -49,7 +49,7 @@ export function cargosMes(card, ctx, X) {
   const k = idxKey(X), d = docFor(ctx, X);
   const gastos = d ? (d.gastos || []).filter(g => g.medio === card.id && (g.frec !== "unico" || d.mes === k)).reduce((s, g) => s + (+g.monto || 0) * factor(g.frec, k), 0) : 0;
   const m = ctx.months[k];
-  const diario = m ? (m.movs || []).filter(x => x.medio === card.id && x.tipo !== "ingreso" && (x.fecha || "").slice(0, 7) === k).reduce((s, x) => s + (+x.monto || 0), 0) : 0;
+  const diario = m ? (m.movs || []).filter(x => x.medio === card.id && x.tipo !== "ingreso" && !(+x.cuotas > 1) && (x.fecha || "").slice(0, 7) === k).reduce((s, x) => s + (+x.monto || 0), 0) : 0;
   return gastos + diario;
 }
 export function cardItems(card) {

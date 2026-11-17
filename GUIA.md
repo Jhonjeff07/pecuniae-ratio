@@ -213,4 +213,4 @@ Estos límites los fija Google y GitHub y pueden cambiar con el tiempo. En **Fir
 | `firebase-config.js` | La conexión con tu proyecto de Firebase (lo único que debes editar). |
 | `firestore.rules` | Las reglas de seguridad que pegas en Firebase (no hace falta subirlo a GitHub, pero no estorba). |
 | `sw.js` | Permite que la app abra sin internet y se instale. |
-| `manifest.webmanifest` e `icons/` | Nombre, colores e íconos de la app instalada. |
+| `manifest.webmanifest` e `icons/` | Nombre, colores, íconos y logo de la app (`icons/logo.svg` es la hormiga con la moneda). |

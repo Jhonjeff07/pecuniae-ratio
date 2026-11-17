@@ -41,7 +41,7 @@ if(configured){
 }
 
 // ---------- Estado ----------
-const S = { user:null, months:{}, perfil:null, cur:null, open:new Set(), guia:null, help:null, tab:"hoy", movTipo:"gasto", undo:null, menu:false, confirmDel:false, confirmAll:false, installEvt:null };
+const S = { user:null, months:{}, perfil:null, cur:null, open:new Set(), guia:null, help:null, dlg:null, tab:"hoy", movTipo:"gasto", undo:null, menu:false, confirmDel:false, confirmAll:false, installEvt:null };
 
 function blankMonth(k){
   return { v:3, mes:k, metaAhorroPct:0, ingresos:[], gastos:[], ahorros:[], movs:[] };
@@ -53,7 +53,7 @@ function normalize(m){
   return m;
 }
 // Tarjetas, créditos y pagos viven en un documento aparte, porque duran varios meses.
-function blankPerfil(){ return { v:5, inicio: thisMonth(), tarjetas:[], creditos:[], pagos:[], ahorros:[], metas:[], prestamos:[], guia:null }; }
+function blankPerfil(){ return { v:5, inicio: thisMonth(), tarjetas:[], creditos:[], pagos:[], ahorros:[], metas:[], prestamos:[], guia:null, topes:{} }; }
 function normalizePerfil(p){
   const mig = p.ahorros==null;
   const b=blankPerfil(); for(const k of Object.keys(b)) if(p[k]==null) p[k]=b[k];
@@ -127,7 +127,7 @@ async function loadMonths(){
 // ---------- Arranque ----------
 if(!configured){
   $("#root").innerHTML = `<div class="screen"><div class="login">
-    <img class="logo" src="icons/icon-192.png" alt="">
+    <img class="logo" src="icons/logo.svg" alt="">
     <h1>Falta conectar Firebase</h1>
     <p>Abre el archivo <b>firebase-config.js</b> y pega la configuración de tu proyecto, como dice el Paso 6 de la guía. Después vuelve a subir los archivos.</p>
   </div></div>`;
@@ -153,7 +153,7 @@ if(!configured){
 
 function renderLogin(err){
   $("#root").innerHTML = `<div class="screen"><div class="login">
-    <img class="logo" src="icons/icon-192.png" alt="">
+    <img class="logo" src="icons/logo.svg" alt="">
     <h1>Pecuniae Ratio</h1>
     <p style="margin:-4px 0 14px;font-weight:600;color:var(--brand)">Tu presupuesto diario</p>
     <p>Sabe cada día cuánto puedes gastar, controla tus tarjetas y créditos, y mira cómo vas mes a mes.</p>
@@ -165,8 +165,9 @@ function renderLogin(err){
     </ul>
     <button class="gbtn" id="gLogin">${GOOGLE_SVG} Entrar con Google</button>
     ${err?`<p class="alert bad" style="margin-top:14px">${esc(err)}</p>`:""}
-    <p class="fine">Solo tú puedes ver tu información. Es gratis.</p>
-  </div></div>`;
+    <p class="fine">Solo tú puedes ver tu información. Es gratis. Al entrar aceptas el <button class="linkbtn" id="vPriv">aviso de privacidad</button>.</p>
+  </div></div><div id="modal"></div>`;
+  $("#vPriv").onclick = ()=>{ S.dlg={kind:"privacidad"}; renderModal(); };
   $("#gLogin").onclick = async ()=>{
     try{ await signInWithPopup(auth, new GoogleAuthProvider()); }
     catch(e){
@@ -186,7 +187,7 @@ function renderShell(){
   <div id="offline" class="offline" ${navigator.onLine?"hidden":""}>Sin internet. Puedes seguir anotando; se sincroniza al volver la conexión.</div>
   <header class="top">
     <div class="top-in">
-      <h1>Pecuniae Ratio</h1>
+      <h1><img class="hlogo" src="icons/logo.svg" alt="">Pecuniae Ratio</h1>
       <div class="monthpick">
         <select id="monthSel" aria-label="Mes"></select>
         <button class="btn small" data-act="newMonth">Nuevo mes</button>
@@ -254,7 +255,7 @@ function calc(m){
   const compromisos = gasCash+tarComp+creComp+aportes+prestComp;
   const metaAhorro = Math.max(0,ingresos)*((+m.metaAhorroPct||0)/100);
   const libre = ingresos-compromisos-metaAhorro;
-  const gastosDia = m.movs.filter(x=>x.tipo!=="ingreso" && x.fecha && x.fecha.slice(0,7)===k);
+  const gastosDia = m.movs.filter(x=>x.tipo!=="ingreso" && !(+x.cuotas>1) && x.fecha && x.fecha.slice(0,7)===k);
   const gastado = sum(gastosDia,x=>+x.monto||0);
   const hormiga = sum(gastosDia.filter(x=>x.tipo==="hormiga"),x=>+x.monto||0);
   const porDia = {}; gastosDia.forEach(x=>{ porDia[x.fecha]=(porDia[x.fecha]||0)+(+x.monto||0); });
@@ -281,13 +282,13 @@ function calc(m){
 const M = () => S.months[S.cur];
 function render(){
   document.body.classList.toggle("en-guia", !!S.guia);
-  if(S.guia){ S.cur=thisMonth(); renderMonthSel(); $("#app").innerHTML=vGuia(); renderMenu(); renderHelp(); return; }
+  if(S.guia){ S.cur=thisMonth(); renderMonthSel(); $("#app").innerHTML=vGuia(); renderMenu(); renderModal(); return; }
   renderMonthSel();
   document.querySelectorAll("#tabs button").forEach(b=>b.setAttribute("aria-selected", String(b.dataset.tab===S.tab)));
   const m = M(), c = calc(m);
   const views = {hoy:vHoy, ingresos:vIngresos, gastos:vGastos, tarjetas:vTarjetas, creditos:vCreditos, prestamos:vPrestamos, ahorros:vAhorros, metas:vMetas, hormiga:vHormiga, historial:vHistorial};
   $("#app").innerHTML = (S.tab==="hoy" ? guiaBanner() : "") + (views[S.tab]||vHoy)(m,c);
-  renderMenu(); renderHelp();
+  renderMenu(); renderModal();
 }
 function renderMonthSel(){
   const ks = Object.keys(S.months).sort().reverse();
@@ -300,9 +301,16 @@ function renderMenu(){
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.navigator.standalone;
   el.innerHTML = `<div class="menu" role="menu">
     <div class="who">${esc(u.displayName||"Tu cuenta")}</div><div class="mail">${esc(u.email||"")}</div>
+    ${S.perfil.ultimaCopia?"":`<p class="subtle" style="margin:0 0 6px">Consejo: descarga de vez en cuando una copia de seguridad.</p>`}
     ${S.installEvt?`<button class="btn" data-act="install">Instalar la app</button>`:""}
     ${ios?`<p class="subtle" style="margin:0 0 4px">Para instalarla en iPhone: toca Compartir y luego “Agregar a inicio”.</p>`:""}
-    <button class="btn" data-act="export">Descargar mis datos (CSV)</button>
+    <button class="btn" data-act="cal">📅 Pagos a mi calendario</button>
+    <div class="msep">Tus datos</div>
+    <button class="btn" data-act="copiaDescargar">Descargar copia de seguridad</button>
+    <button class="btn" data-act="copiaElegir">Restaurar una copia</button>
+    <input type="file" id="copiaFile" accept=".json,application/json" hidden>
+    <button class="btn" data-act="export">Descargar tabla para Excel (CSV)</button>
+    <button class="btn ghost" data-act="privacidad">Aviso de privacidad</button>
     <button class="btn" data-act="logout">Cerrar sesión</button>
     <button class="btn" data-act="delAll" style="color:var(--bad)">${S.confirmAll?"Toca otra vez: se borra todo":"Borrar todos mis datos"}</button>
   </div>`;
@@ -352,6 +360,9 @@ function vHoy(m,c){
   else if(c.libre<0) alerta += `<div class="alert bad">Tus compromisos y tu meta de ahorro superan lo que entra este mes por ${money(-c.libre)}. Baja algún gasto, ajusta la meta de ahorro o anota un ingreso extra.</div>`;
   else if(c.estado==="actual" && c.proyGasto>c.libre+0.5) alerta += `<div class="alert warn">A este ritmo gastarías ${money(c.proyGasto)} en el mes, ${money(c.proyGasto-c.libre)} más de lo que tienes libre.</div>`;
   else if(c.estado==="actual" && c.gastado>0) alerta += `<div class="alert ok">Vas bien: a este ritmo terminas el mes con ${money(c.ahorroProy)} sin gastar.</div>`;
+  for(const a of alertasTopes(m)) alerta += a.nivel==="bad"
+    ? `<div class="alert bad">Te pasaste del tope de <b>${esc(a.cat)}</b>: llevas ${money(a.v)} de ${money(a.t)}. <button class="linkbtn" data-act="goTab" data-v="gastos">Ver topes</button></div>`
+    : `<div class="alert warn">Vas en el ${Math.round(a.v/a.t*100)}% del tope de <b>${esc(a.cat)}</b>: te quedan ${money(a.t-a.v)} este mes.</div>`;
   const movsMes = [...m.movs].sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||""));
   return `
   <section class="panel hero">
@@ -489,6 +500,7 @@ function quickForm(m,pfx,{tipo}={}){
       <label>${t==="ingreso"?"Fecha":"Pagado con"}${t==="ingreso"?`<input id="${pfx}-fecha" type="date" value="${defDate(m)}">`:`<select id="${pfx}-medio">${medioOpts(m,"efectivo")}</select>`}</label>
     </div>
     <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
+      ${t==="gasto"&&S.perfil.tarjetas.length?`<label class="subtle" id="${pfx}-cuotasWrap" hidden>Cuotas <input id="${pfx}-cuotas" inputmode="numeric" value="1" style="width:56px;padding:5px 8px"></label>`:""}
       ${t!=="ingreso"?`<label class="subtle">Fecha <input id="${pfx}-fecha" type="date" value="${defDate(m)}" style="padding:5px 8px"></label>`:""}
       <button class="btn primary" data-act="addMov" data-f="${pfx}">Anotar</button>
     </div>`;
@@ -499,8 +511,8 @@ function movList(m,list){
   const tname = id => { const t=S.perfil.tarjetas.find(x=>x.id===id); return t?("Tarjeta "+(t.nombre||"")):""; };
   return `<div class="mov-list">${list.map(x=>`
     <div class="mov">
-      <span class="tag ${x.tipo}">${x.tipo==="hormiga"?"Hormiga":(x.tipo==="ingreso"?"Ingreso":"Gasto")}</span>
-      <div><div>${esc(x.desc||x.cat)}</div><div class="d">${esc(x.fecha||"")} · ${esc(x.cat||"")}${x.medio&&x.medio!=="efectivo"?" · "+esc(tname(x.medio)):""}</div></div>
+      <span class="tag ${x.tipo}">${x.tipo==="hormiga"?"Hormiga":(x.tipo==="ingreso"?"Ingreso":(+x.cuotas>1?"A cuotas":"Gasto"))}</span>
+      <div><div>${esc(x.desc||x.cat)}</div><div class="d">${esc(x.fecha||"")} · ${esc(x.cat||"")}${x.medio&&x.medio!=="efectivo"?" · "+esc(tname(x.medio)):""}${+x.cuotas>1?` · ${x.cuotas} cuotas, se cobra en la tarjeta`:""}</div></div>
       <span class="amt ${x.tipo}">${x.tipo==="ingreso"?"+":"−"}${money(x.monto)}</span>
       <button class="icon-btn" data-act="del" data-c="movs" data-id="${x.id}" aria-label="Borrar">✕</button>
     </div>`).join("")}</div>`;
@@ -549,7 +561,8 @@ function vGastos(m,c){
     <div style="margin-top:12px"><button class="btn" data-act="add" data-c="gastos">Agregar gasto</button></div>
     ${byGroup(m.gastos,"cat",Object.fromEntries(CAT_GASTO.map(x=>[x,x])),x=>(+x.monto||0)*factor(x.frec,m.mes))}
     ${reserva.length?`<p class="subtle" style="margin-top:12px">Para tus gastos de varios meses (${reserva.map(r=>esc(r.nombre||"sin nombre")).join(", ")}) conviene apartar ${money(sum(reserva,r=>(+r.monto||0)*factor(r.frec,m.mes)))} cada mes.</p>`:""}
-  </section>`;
+  </section>
+  ${enQueSeVa(m,c)}`;
 }
 const SIS_OPTS = sel => `<option value="capital" ${sel!=="fija"?"selected":""}>Capital fijo + intereses</option><option value="fija" ${sel==="fija"?"selected":""}>Cuota fija</option>`;
 const ESTADO = {ok:["ok","Al día ✔"],pendiente:["warn","Pendiente"],mora:["bad","En mora"],atrasado:["bad","Atrasado"],futuro:["","Por pagar"],sin:["","Sin pago este mes"]};
@@ -969,7 +982,7 @@ function proximosPagos(m,c){
   const list=out.map(o=>({...o,d:Math.round((iso2t(o.fecha)-iso2t(hoy))/86400000)})).filter(o=>o.d<=15).sort((a,b)=>a.d-b.d);
   if(!list.length) return "";
   const when = d => d<0?[`Vencido hace ${-d} día${d===-1?"":"s"}`,"bad"]:d===0?["Hoy","warn"]:d===1?["Mañana","warn"]:[`En ${d} días`,d<=3?"warn":""];
-  return `<section class="panel"><div class="listhead"><h2>Próximos pagos y cobros ${hb("fechas")}</h2></div>
+  return `<section class="panel"><div class="listhead"><h2>Próximos pagos y cobros ${hb("fechas")}</h2><button class="btn small" data-act="cal">📅 A mi calendario</button></div>
     <div class="plist">${list.map(o=>{ const [w,cl]=when(o.d); return `<button class="pitem" data-act="goTab" data-v="${o.tab}"><span class="badge ${cl}">${w}</span><span class="ptxt"><span>${o.txt}</span><small>${fechaCorta(o.fecha)}</small></span><b class="num ${o.cobro?"okc":""}">${o.cobro?"+ ":""}${money(o.monto)}</b></button>`; }).join("")}</div></section>`;
 }
 
@@ -1055,27 +1068,181 @@ const AYUDA = [
  {id:"meses", t:"¿Qué pasa cuando cambia el mes?", h:`<p>Cuando abres la app en un mes nuevo, se crea sola: copia tus ingresos y gastos fijos del mes anterior. Los meses pasados quedan guardados y los comparas en <b>Comparar meses</b>.</p><p>Tarjetas, créditos, préstamos, ahorros y metas no son de un mes: siguen solos con sus cuotas y rendimientos.</p>`},
  {id:"glosario", t:"Palabras que pueden confundir", h:`<dl class="glos"><dt>Tasa E.A.</dt><dd>Efectiva anual: cuánto te cobran (o te pagan) en un año. Es la que suele salir en los extractos.</dd><dt>Tasa M.V.</dt><dd>Mes vencido: cuánto te cobran cada mes. 2% M.V. es mucho más que 2% E.A.</dd><dt>Cuota</dt><dd>Cada pago en que divides una deuda.</dd><dt>Pago mínimo</dt><dd>Lo menos que debes pagar en el mes para no quedar atrasado.</dd><dt>Capital</dt><dd>La plata que te prestaron, sin intereses.</dd><dt>Cupo</dt><dd>Lo máximo que puedes deber en una tarjeta.</dd><dt>Cuota de manejo</dt><dd>Lo que te cobra el banco cada mes por tener la tarjeta.</dd><dt>Abono a capital</dt><dd>Pago extra que baja directamente lo que debes.</dd><dt>Retención en la fuente</dt><dd>Lo que el gobierno descuenta de las ganancias de un CDT (suele ser 4%).</dd></dl>`},
  {id:"instalar", t:"Instalarla en el celular", h:`<ul><li><b>Android (Chrome):</b> menú ⋮ → <b>Instalar app</b> o “Agregar a la pantalla principal”.</li><li><b>iPhone (Safari):</b> botón Compartir → <b>Agregar a inicio</b>.</li><li><b>Computador:</b> ícono de instalar en la barra de direcciones de Chrome o Edge.</li></ul>`},
- {id:"privacidad", t:"Privacidad y copia de tus datos", h:`<p>Entras con tu cuenta de Google y nadie más que use la app puede ver tu información.</p><p>Desde tu foto, arriba a la derecha, puedes <b>descargar tus datos</b> o <b>borrarlos todos</b>. Si prefieres, puedes usar números aproximados: la app funciona igual.</p>`},
+ {id:"compracuotas", t:"Compras a cuotas desde Hoy", h:`<p>Si pagas algo con tarjeta de crédito en Hoy, elige la tarjeta en “Pagado con” y aparece el campo <b>Cuotas</b>.</p><ul><li><b>1 cuota:</b> se descuenta de lo que puedes gastar hoy y se suma a la tarjeta.</li><li><b>2 o más cuotas:</b> no se descuenta hoy completo. Queda como compra en la tarjeta y cada mes se aparta solo la cuota, con sus intereses.</li></ul><p>Si borras el movimiento, también se quita la compra de la tarjeta.</p>`},
+ {id:"topes", t:"¿En qué se va tu plata? y topes", h:`<p>En la pestaña <b>Gastos</b>, abajo, ves en qué se va tu plata este mes: gastos fijos por categoría, lo del día a día, los pagos de deudas y el ahorro.</p><p>En <b>Topes del día a día</b> le pones un máximo al mes a una categoría, por ejemplo $300.000 en comida. Cuando llegas al 80% te aviso en Hoy, y si te pasas sale en rojo. Para quitar un tope, borra el valor.</p>`},
+ {id:"calendario", t:"Pagos en tu calendario", h:`<p>En Hoy, en <b>Próximos pagos</b>, o en el menú de tu foto, toca <b>📅 A mi calendario</b>.</p><ul><li><b>Descargar todos:</b> baja un archivo con todas tus fechas. En iPhone se abre en Calendario; en Android o computador ábrelo con tu calendario.</li><li><b>Google Calendar:</b> agrega una fecha a la vez.</li></ul><p>Las tarjetas y créditos se repiten cada mes y te avisan el día anterior. Si cambias una fecha en la app, vuelve a agregarla.</p>`},
+ {id:"copia", t:"Copia de seguridad", h:`<p>Tus datos ya están guardados en tu cuenta. La copia es por si borras algo sin querer.</p><ul><li>En el menú de tu foto toca <b>Descargar copia de seguridad</b>. Guarda el archivo en tu Drive, correo o computador.</li><li>Para volver a esa copia toca <b>Restaurar una copia</b> y elige el archivo. Antes de reemplazar te muestro qué tiene.</li></ul><p>La tabla para Excel (CSV) es otra cosa: sirve para ver tus números en Excel, no para restaurar.</p>`},
+ {id:"privacidad", t:"Privacidad y tus datos", h:`<p>Entras con tu cuenta de Google y nadie más que use la app puede ver tu información.</p><p>Desde tu foto, arriba a la derecha, puedes <b>descargar una copia</b> o <b>borrar todos tus datos</b>. Si prefieres, puedes usar números aproximados: la app funciona igual.</p><p><button class="btn small" data-act="privacidad">Leer el aviso de privacidad completo</button></p>`},
 ];
-function renderHelp(){
-  const el=$("#modal"); if(!el) return;
-  document.body.classList.toggle("modal-open", !!S.help);
-  if(!S.help){ el.innerHTML=""; return; }
+const renderHelp = () => renderModal();
+function renderHelpSheet(el){
   el.innerHTML = `<div class="modal"><div class="sheet" role="dialog" aria-modal="true" aria-label="Ayuda">
     <div class="sheet-h"><h2>Ayuda</h2><button class="icon-btn" data-act="helpClose" aria-label="Cerrar ayuda">✕</button></div>
     <div class="sheet-b">
       <button class="btn primary big" data-act="gStart">🧭 Hacer la guía paso a paso</button>
       <p class="subtle" style="margin:14px 0 6px">O toca un tema:</p>
       ${AYUDA.map(a=>`<details class="hq-item" id="h-${a.id}" ${a.id===S.help?"open":""}><summary>${a.t}</summary><div class="hq-b">${a.h}</div></details>`).join("")}
+      <div class="gbtns" style="margin:18px 0 0;flex-wrap:wrap"><button class="btn ghost" data-act="privacidad">Aviso de privacidad</button></div>
     </div></div></div>`;
   if(S.help!=="inicio") setTimeout(()=>{ const d=$("#h-"+S.help); if(d) d.scrollIntoView({block:"start"}); },0);
+}
+
+// ---------- Ventanas (privacidad, copia, calendario) ----------
+function renderModal(){
+  const el=$("#modal"); if(!el) return;
+  const abierto = !!(S.help || S.dlg);
+  document.body.classList.toggle("modal-open", abierto);
+  if(!abierto){ el.innerHTML=""; return; }
+  if(S.help){ renderHelpSheet(el); return; }
+  const d=S.dlg, titulo={privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
+  const cuerpo={privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
+  el.innerHTML = `<div class="modal"><div class="sheet" role="dialog" aria-modal="true" aria-label="${titulo}">
+    <div class="sheet-h"><h2>${titulo}</h2><button class="icon-btn" data-act="helpClose" aria-label="Cerrar">✕</button></div>
+    <div class="sheet-b">${cuerpo?cuerpo(d):""}</div></div></div>`;
+}
+
+// Aviso de privacidad (Ley 1581 de 2012)
+const PRIVACIDAD_HTML = `<div class="hq-b">
+  <p><b>Qué datos se guardan.</b> Tu nombre, correo y foto de tu cuenta de Google (para que entres) y la información que tú escribes en la app: ingresos, gastos, deudas, préstamos, ahorros y metas.</p>
+  <p><b>Para qué.</b> Solo para que la app te muestre tu presupuesto en cualquier dispositivo. No se venden, no se comparten con terceros y no se usan para publicidad.</p>
+  <p><b>Dónde se guardan.</b> En Firebase, el servicio de bases de datos de Google, con conexión cifrada. Las reglas de seguridad impiden que otra persona que use la app vea tus datos.</p>
+  <p><b>Quién puede verlos.</b> Tú. Quien administra Pecuniae Ratio tiene acceso técnico a la base de datos, como pasa en cualquier app, y se compromete a no consultar ni compartir tu información. Si prefieres, puedes usar valores aproximados: la app funciona igual.</p>
+  <p><b>Tus derechos.</b> Según la Ley 1581 de 2012 puedes conocer, actualizar, corregir y borrar tus datos. Todo lo puedes hacer tú mismo en la app: editar cualquier dato, <b>descargar una copia</b> o <b>borrar todos tus datos</b> desde el menú de tu foto. Para cualquier otra solicitud, comunícate con quien te compartió la app.</p>
+  <p><b>Si dejas de usarla.</b> Tus datos quedan guardados hasta que los borres.</p>
+  <p class="subtle">Al entrar con Google aceptas este aviso.</p>
+</div>`;
+
+// 3. Copia de seguridad y restaurar
+function descargarArchivo(nombre, contenido, tipo){
+  const blob=new Blob([contenido],{type:tipo}); const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download=nombre; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+function descargarCopia(){
+  flushAll();
+  const copia={app:"pecuniae-ratio",tipo:"copia",version:5,fecha:new Date().toISOString(),meses:S.months,perfil:S.perfil};
+  descargarArchivo(`pecuniae-ratio-copia-${todayISO()}.json`, JSON.stringify(copia,null,1), "application/json");
+  S.perfil.ultimaCopia=todayISO(); savePerfil();
+  toast("Copia descargada. Guárdala en tu Drive, correo o computador.");
+}
+function leerCopia(file){
+  const r=new FileReader();
+  r.onload=()=>{
+    let c; try{ c=JSON.parse(r.result); }catch(_){ toast("Ese archivo no es una copia de Pecuniae Ratio."); return; }
+    if(!c || c.app!=="pecuniae-ratio" || typeof c.meses!=="object" || typeof c.perfil!=="object"){ toast("Ese archivo no es una copia de Pecuniae Ratio."); return; }
+    const meses=Object.keys(c.meses).filter(k=>/^\d{4}-\d{2}$/.test(k));
+    if(!meses.length){ toast("La copia está vacía."); return; }
+    S.menu=false; renderMenu(); S.dlg={kind:"restaurar",copia:c,meses}; renderModal();
+  };
+  r.readAsText(file);
+}
+function dlgRestaurar(d){
+  const c=d.copia, p=c.perfil||{}, f=c.fecha?new Date(c.fecha):null;
+  const cnt=(a,s,pl)=>`${(a||[]).length} ${(a||[]).length===1?s:pl}`;
+  return `<p>Vas a reemplazar <b>todos tus datos actuales</b> por esta copia${f?` del <b>${f.getDate()} de ${MESES[f.getMonth()]} de ${f.getFullYear()}</b>`:""}:</p>
+    <ul class="hq-b"><li>${d.meses.length} mes${d.meses.length===1?"":"es"} (${monthName(d.meses.sort()[0])} a ${monthName(d.meses.sort().slice(-1)[0])})</li>
+      <li>${cnt(p.tarjetas,"tarjeta","tarjetas")}, ${cnt(p.creditos,"crédito","créditos")}, ${cnt(p.prestamos,"préstamo","préstamos")}</li>
+      <li>${cnt(p.ahorros,"ahorro","ahorros")}, ${cnt(p.metas,"meta","metas")}</li></ul>
+    <p class="alert warn">Lo que tengas ahora y no esté en la copia se pierde. Si no estás seguro, descarga primero una copia de lo actual.</p>
+    <div class="gbtns" style="margin:12px 0 0;flex-direction:column;align-items:stretch">
+      <button class="btn" data-act="copiaDescargar">Descargar primero una copia de lo actual</button>
+      <button class="btn primary" data-act="copiaRestaurar">Sí, restaurar esta copia</button>
+      <button class="btn ghost" data-act="helpClose">Cancelar</button></div>`;
+}
+async function restaurarCopia(){
+  const c=S.dlg.copia, meses=S.dlg.meses;
+  for(const k of Object.keys(S.months)){ if(!meses.includes(k)){ clearTimeout(pending.get(k)); pending.delete(k); try{ await deleteDoc(monthDoc(k)); }catch(e){ console.error(e); } } }
+  S.months={}; for(const k of meses){ const mm=JSON.parse(JSON.stringify(c.meses[k])); mm.mes=k; S.months[k]=normalize(mm); save(k); }
+  S.perfil=normalizePerfil(JSON.parse(JSON.stringify(c.perfil))); if(!S.perfil.inicio) S.perfil.inicio=meses.sort()[0]; savePerfil();
+  if(!S.months[thisMonth()] && meses.sort().slice(-1)[0] < thisMonth()) newMonth(true);
+  S.autoMes=null; S.cur = S.months[thisMonth()] ? thisMonth() : Object.keys(S.months).sort().pop();
+  S.dlg=null; S.open=new Set(); S.guia=null; S.tab="hoy"; renderModal(); render(); confirmSaved("Copia restaurada");
+}
+
+// 4. Calendario
+function eventosCalendario(){
+  const hoy=todayISO(), M0=mIdx(thisMonth()), c=calc(S.months[thisMonth()]), ev=[];
+  const proxDia = d => { const dim=daysIn(thisMonth()); let f=`${thisMonth()}-${pad(Math.min(d,dim))}`; if(f<hoy){ const k=idxKey(M0+1); f=`${k}-${pad(Math.min(d,daysIn(k)))}`; } return f; };
+  S.perfil.tarjetas.forEach((t,i)=>{ const d=Math.round(+t.diaPago||0); if(d>0 && (c.tc[i].deuda>0.5||c.tc[i].min>0.5)) ev.push({id:"t"+t.id,titulo:`Pagar tarjeta ${t.nombre||""}`.trim(),fecha:proxDia(d),dia:d,repite:true,desc:`Pago de la tarjeta ${t.nombre||""}. Revisa el valor en Pecuniae Ratio o en tu extracto.`,monto:c.tc[i].min}); });
+  S.perfil.creditos.forEach((x,i)=>{ const st=c.cc[i], d=Math.round(+x.diaPago||0)||(x.primerPago&&x.primerPago.length>=10?+x.primerPago.slice(8,10):0); if(!(d>0) || st.deuda<=0.5) return;
+    const f=proxDia(d), restantes=Math.max(1, st.item.fin - mIdx(f) + 1);
+    ev.push({id:"c"+x.id,titulo:`Cuota ${x.nombre||"crédito"}`,fecha:f,dia:d,repite:true,veces:restantes,desc:`Cuota de ${money(+x.cuotaReal||st.min)} (${restantes} cuota${restantes===1?"":"s"} pendiente${restantes===1?"":"s"}).`,monto:st.min}); });
+  (S.perfil.prestamos||[]).forEach(p=>{ const e=prestamoEstado(p,hoy); if(e.estado==="pagado") return; let acum=0;
+    e.cal.forEach(q=>{ acum+=q.valor; if(acum-e.pagado<=0.5 || q.fecha<hoy) return;
+      ev.push({id:`p${p.id}-${q.n}`,titulo:`${p.dir==="debo"?"Pagarle a":"Cobrarle a"} ${p.persona||"alguien"}`,fecha:q.fecha,desc:`${money(q.valor)}${q.de>1?` · cuota ${q.n} de ${q.de}`:""}${p.motivo?` · ${p.motivo}`:""}`,monto:q.valor}); }); });
+  return ev.sort((a,b)=>a.fecha.localeCompare(b.fecha));
+}
+const ymd = f => f.replace(/-/g,"");
+const diaSig = f => { const t=iso2t(f)+86400000; return new Date(t).toISOString().slice(0,10); };
+const rrule = e => e.repite ? `RRULE:FREQ=MONTHLY;${e.dia>=29?"BYMONTHDAY=-1":`BYMONTHDAY=${e.dia}`}${e.veces?`;COUNT=${e.veces}`:""}` : "";
+function linkGoogle(e){
+  const q=new URLSearchParams({action:"TEMPLATE",text:e.titulo,dates:`${ymd(e.fecha)}/${ymd(diaSig(e.fecha))}`,details:e.desc+"\n\nAgregado desde Pecuniae Ratio."});
+  if(e.repite) q.set("recur",rrule(e));
+  return "https://calendar.google.com/calendar/render?"+q.toString();
+}
+function icsTexto(evs){
+  const escI = s => String(s).replace(/\\/g,"\\\\").replace(/;/g,"\\;").replace(/,/g,"\\,").replace(/\n/g,"\\n");
+  const now=new Date().toISOString().replace(/[-:]/g,"").slice(0,15)+"Z";
+  const L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Pecuniae Ratio//ES","CALSCALE:GREGORIAN","METHOD:PUBLISH"];
+  for(const e of evs){
+    L.push("BEGIN:VEVENT",`UID:${e.id}@pecuniae-ratio`,`DTSTAMP:${now}`,`DTSTART;VALUE=DATE:${ymd(e.fecha)}`,`DTEND;VALUE=DATE:${ymd(diaSig(e.fecha))}`,`SUMMARY:${escI(e.titulo)}`,`DESCRIPTION:${escI(e.desc)}`);
+    if(e.repite) L.push(rrule(e));
+    L.push("BEGIN:VALARM","ACTION:DISPLAY",`DESCRIPTION:${escI(e.titulo)}`,"TRIGGER:-PT15H","END:VALARM","END:VEVENT");
+  }
+  L.push("END:VCALENDAR"); return L.join("\r\n");
+}
+function dlgCalendario(){
+  const evs=eventosCalendario();
+  if(!evs.length) return `<p class="hint">Aún no hay fechas para agregar. Escribe el <b>día de pago</b> en tus tarjetas y créditos, o la <b>fecha de pago</b> en tus préstamos, y vuelve aquí.</p>`;
+  const cuando = e => e.repite ? `cada mes el día ${e.dia>=29?"último del mes":e.dia}${e.veces?` · ${e.veces} vez${e.veces===1?"":"es"}`:""}` : fechaCorta(e.fecha);
+  return `<p class="hint">Así tu celular te avisa el día anterior, aunque no abras la app. Las tarjetas y los créditos quedan como pagos <b>que se repiten cada mes</b>.</p>
+    <button class="btn primary big" data-act="calTodo" style="width:100%">📅 Descargar todos (${evs.length})</button>
+    <p class="subtle" style="margin:8px 0 14px">En iPhone, abre el archivo descargado y toca “Agregar todo”. En Android o computador, ábrelo con tu calendario, o usa los botones de Google Calendar de abajo, uno por uno.</p>
+    <div class="plist">${evs.map(e=>`<div class="pitem" style="cursor:default"><span class="ptxt"><span><b>${esc(e.titulo)}</b></span><small>${cuando(e)}${e.monto>0.5?` · ${money(e.monto)}`:""}</small></span><a class="btn small" href="${esc(linkGoogle(e))}" target="_blank" rel="noopener">Google Calendar</a></div>`).join("")}</div>`;
+}
+
+// 5. ¿En qué se va tu plata? y topes por categoría
+const CAT_TOPES = [...CAT_MOV, "Gastos hormiga"];
+function gastoPorCategoria(m){
+  const k=m.mes, out={};
+  m.movs.filter(x=>x.tipo!=="ingreso" && !(+x.cuotas>1) && (x.fecha||"").slice(0,7)===k).forEach(x=>{ const cat=x.tipo==="hormiga"?"Gastos hormiga":(CAT_MOV.includes(x.cat)?x.cat:"Otros"); out[cat]=(out[cat]||0)+(+x.monto||0); });
+  return out;
+}
+function alertasTopes(m){
+  const topes=S.perfil.topes||{}, g=gastoPorCategoria(m), out=[];
+  for(const cat of CAT_TOPES){ const t=+topes[cat]||0; if(!t) continue; const v=g[cat]||0;
+    if(v>t+0.5) out.push({cat,v,t,nivel:"bad"}); else if(v>=t*0.8) out.push({cat,v,t,nivel:"warn"}); }
+  return out;
+}
+function enQueSeVa(m,c){
+  const k=m.mes, filas={};
+  m.gastos.forEach(g=>{ const v=(+g.monto||0)*factor(g.frec,k); if(v>0) filas[g.cat||"Otros"]=(filas[g.cat||"Otros"]||0)+v; });
+  const dia=gastoPorCategoria(m); Object.entries(dia).forEach(([cat,v])=>{ const n=cat==="Gastos hormiga"?cat:`${cat} (día a día)`; filas[n]=(filas[n]||0)+v; });
+  const deudas=c.tarComp+c.creComp+c.prestComp; if(deudas>0.5) filas["Pagos de deudas"]=deudas;
+  if(c.aportes>0.5) filas["Ahorro"]=c.aportes;
+  const lista=Object.entries(filas).sort((a,b)=>b[1]-a[1]), total=sum(lista,x=>x[1]);
+  const topes=S.perfil.topes||{};
+  const barras = lista.length ? lista.map(([n,v])=>`<div class="cbar"><div class="cbar-h"><span>${esc(n)}</span><span class="num">${money(v)} <small>${Math.round(v/total*100)}%</small></span></div><div class="bar"><span class="${n==="Pagos de deudas"?"bad":n==="Ahorro"?"":"neu"}" style="width:${(v/lista[0][1]*100).toFixed(1)}%"></span></div></div>`).join("")
+    : `<div class="empty">Cuando tengas gastos, aquí verás en qué se va tu plata.</div>`;
+  const filasTope = CAT_TOPES.map(cat=>{ const v=dia[cat]||0, t=+topes[cat]||0, p=t?v/t:0, cl=t&&v>t?"bad":t&&p>=0.8?"warn":"";
+    return `<div class="trow"><span class="tcat">${esc(cat)}</span><span class="num tgast">${money(v)}</span>
+      <label class="ttope">tope<input inputmode="numeric" data-b="tope|-|${esc(cat)}|money" value="${t?numTxt(t):""}" placeholder="sin tope"></label>
+      ${t?`<div class="bar tbar"><span class="${cl}" style="width:${Math.min(100,p*100).toFixed(1)}%"></span></div><span class="tmsg ${cl}">${v>t?`te pasaste ${money(v-t)}`:`quedan ${money(t-v)}`}</span>`:""}</div>`; }).join("");
+  return `<section class="panel">
+    <div class="listhead"><h2>¿En qué se va tu plata? ${hb("topes")}</h2><span class="total num">${money(total)} en ${monthName(k)}</span></div>
+    <div class="cbars">${barras}</div>
+  </section>
+  <section class="panel">
+    <h2>Topes del día a día ${hb("topes")}</h2>
+    <p class="hint">Ponle un máximo al mes a lo que quieras controlar, como comida o domicilios. Te aviso en Hoy cuando llegues al 80% y cuando te pases.</p>
+    <div class="trows">${filasTope}</div>
+  </section>`;
 }
 
 // ---------- Guía paso a paso ----------
 const PASOS=["hola","ingresos","gastos","deudas","ahorros","metas","fin"];
 const PASO_L={ingresos:"Ingresos",gastos:"Gastos",deudas:"Deudas",ahorros:"Ahorros",metas:"Metas"};
 const nombreCorto = () => esc(((S.user&&S.user.displayName)||"").trim().split(" ")[0]);
-const bub = html => `<div class="bub"><span class="bav" aria-hidden="true">PR</span><div class="btxt">${html}</div></div>`;
+const bub = html => `<div class="bub"><img class="bav" src="icons/logo.svg" alt="" aria-hidden="true"><div class="btxt">${html}</div></div>`;
 function gchips(f, items, sel){ return `<div class="gchips">${items.map(([v,l])=>{ const on=String(sel)===String(v); return `<button type="button" class="gchip ${on?"on":""}" data-act="gPick" data-f="${f}" data-v="${esc(v)}" aria-pressed="${on}">${l}</button>`; }).join("")}</div>`; }
 function gin(f, ph, o={}){ const v=S.guia.tmp[f]; return `<input id="g-${f}" class="${o.big?"gbig":""}" ${o.type?`type="${o.type}"`:""} ${o.money?'inputmode="numeric"':""} ${o.dec?'inputmode="decimal"':""} placeholder="${esc(ph)}" value="${esc(v==null?"":(o.money&&v!==""?numTxt(parseMoney(v)):v))}">`; }
 const gq = (label, inner, hint) => `<div class="gq">${label?`<label class="glab">${label}</label>`:""}${inner}${hint?`<p class="ghint">${hint}</p>`:""}</div>`;
@@ -1315,8 +1482,14 @@ async function accionesNuevas(act,b,e,m){
   switch(act){
     case "unfold": S.open.add(b.dataset.id); render(); setTimeout(()=>{ const el=document.querySelector(`[data-fold="${CSS.escape(b.dataset.id)}"]`); if(el) el.scrollIntoView({block:"nearest"}); },0); return true;
     case "fold": S.open.delete(b.dataset.id); render(); confirmSaved(b.dataset.l||"Guardado"); return true;
-    case "help": S.menu=false; renderMenu(); S.help=b.dataset.v||"inicio"; renderHelp(); return true;
-    case "helpClose": S.help=null; renderHelp(); return true;
+    case "help": S.menu=false; renderMenu(); S.dlg=null; S.help=b.dataset.v||"inicio"; renderModal(); return true;
+    case "helpClose": S.help=null; S.dlg=null; renderModal(); return true;
+    case "privacidad": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"privacidad"}; renderModal(); return true;
+    case "cal": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"calendario"}; renderModal(); return true;
+    case "calTodo": { const evs=eventosCalendario(); if(!evs.length) return true; descargarArchivo("pagos-pecuniae-ratio.ics", icsTexto(evs), "text/calendar;charset=utf-8"); toast(`Descargaste ${evs.length} fecha${evs.length===1?"":"s"}. Ábrelo para agregarlas a tu calendario.`); return true; }
+    case "copiaDescargar": S.menu=false; renderMenu(); descargarCopia(); return true;
+    case "copiaElegir": { const f=$("#copiaFile"); if(f){ f.value=""; f.click(); } return true; }
+    case "copiaRestaurar": if(S.dlg && S.dlg.kind==="restaurar") await restaurarCopia(); return true;
     case "gStart": S.help=null; S.menu=false; S.guia={paso:0,form:null,done:false,tmp:{}}; render(); window.scrollTo({top:0}); return true;
     case "gNo": S.perfil.guia={hecho:false,visto:true}; savePerfil(); render(); toast("Si cambias de opinión, toca el botón ? de arriba."); return true;
     case "gExit": S.guia=null; if(!S.perfil.guia) S.perfil.guia={hecho:false,visto:true}; savePerfil(); S.tab="hoy"; render(); toast("Lo que alcanzaste a llenar quedó guardado. Puedes retomar la guía con el botón ?."); return true;
@@ -1389,8 +1562,8 @@ function exportCSV(){
 }
 
 document.addEventListener("click",async e=>{
-  if(!S.user) return;
-  if(e.target.classList && e.target.classList.contains("modal")){ S.help=null; renderHelp(); return; }
+  if(e.target.classList && e.target.classList.contains("modal")){ S.help=null; S.dlg=null; renderModal(); return; }
+  if(!S.user){ if(e.target.closest('[data-act="helpClose"]')){ S.dlg=null; renderModal(); } return; }
   if(S.menu && !e.target.closest(".menu") && !e.target.closest('[data-act="menu"]')){ S.menu=false; S.confirmAll=false; renderMenu(); }
   const tabBtn = e.target.closest("#tabs button");
   if(tabBtn){ S.tab=tabBtn.dataset.tab; S.confirmDel=false; S.firstTime=false; try{localStorage.setItem("pd:tab",S.tab);}catch(_){} render(); window.scrollTo({top:0}); return; }
@@ -1416,9 +1589,18 @@ document.addEventListener("click",async e=>{
     const fecha = ($("#"+f+"-fecha")||{}).value || defDate(m);
     if(fecha.slice(0,7)!==m.mes){ toast(`La fecha debe ser de ${monthName(m.mes)}.`); return; }
     const medio = ($("#"+f+"-medio")||{}).value || "efectivo";
-    m.movs.push({id:uid(),fecha,tipo,monto,desc:$("#"+f+"-desc").value.trim(),cat:$("#"+f+"-cat").value,medio});
+    const tarj = medio!=="efectivo" ? S.perfil.tarjetas.find(x=>x.id===medio) : null;
+    const cw=$("#"+f+"-cuotasWrap"), cuotas = tipo==="gasto" && tarj && cw && !cw.hidden ? Math.max(1,Math.min(120,Math.round(parseNum($("#"+f+"-cuotas").value)||1))) : 1;
+    const desc=$("#"+f+"-desc").value.trim(), mov={id:uid(),fecha,tipo,monto,desc,cat:$("#"+f+"-cat").value,medio};
+    const antes = alertasTopes(m).map(a=>a.cat+a.nivel).join();
+    if(cuotas>1){ const cid=uid(); tarj.compras.push({id:cid,fecha,desc:desc||mov.cat,valor:monto,cuotas,primerCobro:"",movId:mov.id}); mov.cuotas=cuotas; mov.compraId=cid; savePerfil(); }
+    m.movs.push(mov);
     if(f==="hq"){ S.hcat=""; S.hval=0; }
-    save(); render(); toast(`Anotaste ${money(monto)}${tipo==="hormiga"?" en gastos hormiga":""}.`);
+    save(); render();
+    const nueva = alertasTopes(m).find(a=>!antes.includes(a.cat+a.nivel) && (a.cat===(tipo==="hormiga"?"Gastos hormiga":(CAT_MOV.includes(mov.cat)?mov.cat:"Otros"))));
+    if(nueva) toast(nueva.nivel==="bad" ? `Anotado. Ojo: te pasaste del tope de ${nueva.cat} (${money(nueva.v)} de ${money(nueva.t)}).` : `Anotado. Llevas el ${Math.round(nueva.v/nueva.t*100)}% de tu tope de ${nueva.cat}.`);
+    else if(cuotas>1) toast(`Compra de ${money(monto)} a ${cuotas} cuotas en la tarjeta ${tarj.nombre||""}. Cada mes se aparta la cuota.`);
+    else toast(`Anotaste ${money(monto)}${tipo==="hormiga"?" en gastos hormiga":""}.`);
     const nf=$("#"+f+"-monto"); if(nf) nf.focus();
     return;
   }
@@ -1450,8 +1632,12 @@ document.addEventListener("click",async e=>{
     if(c==="tarjetas"||c==="creditos"){ quitados=S.perfil.pagos.filter(p=>p.oblig===obj.id); S.perfil.pagos=S.perfil.pagos.filter(p=>p.oblig!==obj.id); }
     if(c==="metas"){ quitados=S.perfil.ahorros.filter(a=>a.meta===obj.id); quitados.forEach(a=>a.meta=""); }
     if(c==="ppago" && obj.movId) quitarMov(obj.movId);
+    let ligado=null;
+    if(c==="movs" && obj.compraId){ for(const t of S.perfil.tarjetas){ const i=t.compras.findIndex(x=>x.id===obj.compraId); if(i>=0){ ligado={arr:t.compras,ix:i,obj:t.compras[i]}; t.compras.splice(i,1); savePerfil(); break; } } }
+    if(c==="tcompra" && obj.movId){ for(const k of Object.keys(S.months)){ const a2=S.months[k].movs, i=a2.findIndex(x=>x.id===obj.movId); if(i>=0){ ligado={arr:a2,ix:i,obj:a2[i],k}; a2.splice(i,1); save(k); break; } } }
     saveFor(c); render();
-    toast("Borrado.",()=>{ arr.splice(ix,0,obj); if(c==="metas") quitados.forEach(a=>a.meta=obj.id); else S.perfil.pagos.push(...quitados); saveFor(c); render(); });
+    toast(ligado?(c==="movs"?"Borrado, también de la tarjeta.":"Compra borrada, también de tus movimientos."):"Borrado.",()=>{ arr.splice(ix,0,obj); if(c==="metas") quitados.forEach(a=>a.meta=obj.id); else S.perfil.pagos.push(...quitados);
+      if(ligado){ ligado.arr.splice(ligado.ix,0,ligado.obj); if(ligado.k) save(ligado.k); else savePerfil(); } saveFor(c); render(); });
     return;
   }
   if(act==="addPago"){
@@ -1492,10 +1678,13 @@ document.addEventListener("change",e=>{
   if(!S.user) return;
   if(S.guia && e.target.id && e.target.id.startsWith("g-")){ gSync(); scheduleRender(); return; }
   if(e.target.id==="monthSel"){ S.cur=e.target.value; S.confirmDel=false; render(); return; }
+  if(e.target.id==="copiaFile"){ const f=e.target.files&&e.target.files[0]; if(f) leerCopia(f); return; }
+  if(e.target.id && /-medio$/.test(e.target.id)){ const w=$("#"+e.target.id.replace(/-medio$/,"-cuotasWrap")); if(w) w.hidden = e.target.value==="efectivo"; return; }
   const bnd = e.target.dataset.b; if(!bnd) return;
   const [coll,id,field,type] = bnd.split("|"); const m=M();
   const val = type==="money" ? parseMoney(e.target.value) : (type==="num" ? (e.target.value.trim()===""?"":parseNum(e.target.value)) : e.target.value);
   if(coll==="meta"){ m[field]=val===""?0:val; save(); }
+  else if(coll==="tope"){ if(!S.perfil.topes) S.perfil.topes={}; if(val>0) S.perfil.topes[field]=val; else delete S.perfil.topes[field]; savePerfil(); }
   else if(coll==="minReal"){ const t=S.perfil.tarjetas.find(x=>x.id===id); if(!t) return; if(!t.minReal) t.minReal={};
     if(e.target.value.trim()==="") delete t.minReal[field]; else t.minReal[field]=val; savePerfil(); }
   else { const {obj}=findColl(m,coll,id); if(!obj) return; obj[field]= field==="cobraSiempre" ? (val!=="no") : field==="segIncl" ? (val==="si") : val;
@@ -1521,7 +1710,7 @@ function flushRender(){
   if(key){ const el=document.querySelector(key); if(el){ if(val!==null && el.value!==val && !(el.dataset.b && el.dataset.b.includes("|money"))) el.value=val; el.focus(); try{ const l=el.value.length; el.setSelectionRange(l,l); }catch(e){} } }
 }
 document.addEventListener("keydown",e=>{
-  if(e.key==="Escape" && S.help){ S.help=null; renderHelp(); return; }
+  if(e.key==="Escape" && (S.help||S.dlg)){ S.help=null; S.dlg=null; renderModal(); return; }
   if(e.key==="Enter" && e.target.id && e.target.id.startsWith("g-") && e.target.type!=="checkbox"){ const bt=document.querySelector('[data-act="gSave"]'); if(bt){ e.preventDefault(); bt.click(); } return; }
   if(e.key==="Enter" && e.target.closest("[data-form]")){ const f=e.target.closest("[data-form]").dataset.form; const btn=document.querySelector(`[data-act="addMov"][data-f="${f}"]`); if(btn) btn.click(); }
 });

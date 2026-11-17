@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Pecuniae Ratio</title>
+  <rect width="512" height="512" rx="112" fill="#23408E"/>
+  <g transform="translate(256 256) scale(1.1) translate(-260 -259) translate(-22 6)">
+    <g stroke="#F4F6FB" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <g stroke-width="17">
+        <path d="M300 282 L268 330 L242 368"/>
+        <path d="M322 288 L326 340 L308 382"/>
+        <path d="M342 280 L378 326 L408 348"/>
+      </g>
+      <g stroke-width="13">
+        <path d="M392 196 L404 146 L446 124"/>
+        <path d="M414 204 L446 166 L482 160"/>
+      </g>
+    </g>
+    <ellipse cx="320" cy="264" rx="42" ry="31" transform="rotate(-12 320 264)" fill="#F4F6FB"/>
+    <circle cx="273" cy="274" r="15" fill="#F4F6FB"/>
+    <circle cx="396" cy="226" r="42" fill="#F4F6FB"/>
+    <circle cx="410" cy="216" r="8" fill="#23408E"/>
+    <path d="M404 244 Q 418 254, 430 240" stroke="#23408E" stroke-width="6" stroke-linecap="round" fill="none"/>
+    <circle cx="176" cy="282" r="94" fill="#F2B33D"/>
+    <circle cx="176" cy="282" r="94" fill="none" stroke="#D9921A" stroke-width="13"/>
+    <circle cx="176" cy="282" r="67" fill="none" stroke="#FFD680" stroke-width="6"/>
+    <text x="176" y="320" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="108" fill="#9A5E0B">$</text>
+  </g>
+</svg>
