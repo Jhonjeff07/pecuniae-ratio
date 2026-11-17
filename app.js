@@ -4,7 +4,7 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChang
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, getDocs, getDoc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { ahorroEn, proyectarAhorro, metaEstado, TIPOS_AHORRO, TIPOS_META, toDate, addMonths } from "./ahorros.js";
 import { prestamoEstado, venceEnMes, iso2t } from "./prestamos.js";
-import { mIdx, idxKey, daysIn, FREQ, factor, tasaMes, cardState, creditState, consejos, ordenPago, CLASES_ROTATIVAS, TIPOS_CUOTAS } from "./engine.js";
+import { mIdx, idxKey, daysIn, FREQ, factor, tasaMes, cardState, creditState, consejos, ordenPago, CLASES_ROTATIVAS, TIPOS_CUOTAS, cuotaNeta, tasaDesdeCuota } from "./engine.js";
 
 // ---------- Utilidades ----------
 const $ = s => document.querySelector(s);
@@ -634,7 +634,7 @@ function vTarjetas(m,c){
       <p class="subtle" style="margin:-4px 0 10px">${k.ultimoUso===null?"Aún no tiene compras registradas.":(k.mesesSinUso===0?"La usaste este mes.":`Último uso: ${monthName(idxKey(k.ultimoUso))} (hace ${k.mesesSinUso} mes${k.mesesSinUso===1?"":"es"}).`)}</p>
       <div class="stats">
         <div class="stat"><div class="k">Te toca pagar</div><div class="v num">${money(k.min)}</div><div class="s">${k.minReal!==undefined&&k.minReal!==""?"según tu extracto":(k.min<=0.5?"no debes nada":`capital ${money(k.capDue)} + intereses ${money(k.interes)}${k.manejo?` + manejo ${money(k.manejo)}`:""}${k.mora>0.5?` + atrasado ${money(k.mora)}`:""}`)}</div></div>
-        <div class="stat"><div class="k">Pagaste</div><div class="v num ok">${money(k.pagado+k.abonos)}</div><div class="s">${k.abonos?`incluye ${money(k.abonos)} de abono extra`:"pago del mes"}</div></div>
+        <div class="stat"><div class="k">Pagaste</div><div class="v num ok">${money(k.pagado+k.abonos)}</div><div class="s">${k.pagado+k.abonos>0.5?`a capital ${money(k.pagoCapital)} · intereses ${money(k.pagoInteres)}${k.pagoCargos>0.5?` · manejo ${money(k.pagoCargos)}`:""}`:"pago del mes"}</div></div>
         <div class="stat"><div class="k">Te falta pagar</div><div class="v num ${k.falta>0.5?"bad":"ok"}">${money(k.falta)}</div></div>
         <div class="stat"><div class="k">${M===mIdx(thisMonth())?"Debes hoy":(M<mIdx(thisMonth())?"Debías al final del mes":"Deberías al final del mes")}</div><div class="v num">${money(k.deuda)}</div><div class="s">incluye compras que aún no te cobran</div></div>
         <div class="stat"><div class="k">Cupo disponible</div>${k.cupo>0?`<div class="v num ${k.cupo-k.deuda<0?"bad":""}">${money(k.cupo-k.deuda)}</div><div class="bar" style="margin:6px 0 0"><span class="${cls}" style="width:${usoPct}%"></span></div><div class="s">usas ${Math.round(uso*100)}% del cupo</div>`:`<div class="v num">—</div><div class="s">escribe el cupo total</div>`}</div>
@@ -680,6 +680,17 @@ function vTarjetas(m,c){
     <button class="btn" data-act="add" data-c="tarjetas">Agregar tarjeta o cupo</button>
   </section>${resumenDeudas(c)}`;
 }
+const fechaCompleta = (p, dia) => !p ? "" : (p.length>=10 ? p.slice(0,10) : `${p}-${pad(Math.min(Math.max(1,+dia||1),daysIn(p)))}`);
+const pctTxt = x => String(Math.round(x*100)/100).replace(".",",");
+function notaCredito(cr,k){
+  const it=k.item, out=[];
+  if(!cr.primerPago) out.push(`<p class="alert warn" style="margin:12px 0 0">Falta la <b>fecha de la primera cuota</b>. Sin ella la app supone que empezaste a pagar este mes. La encuentras en tu contrato o en tu primer extracto.</p>`);
+  if(it.inferida) out.push(`<p class="alert ok" style="margin:12px 0 0">Calculé la tasa con lo que pagas: <b>${pctTxt(it.eaUsada)}% E.A.</b> (${pctTxt(it.ie*100)}% mensual). Si tu extracto dice otra, escríbela arriba.</p>`);
+  else if(it.eaSegunCuota && Math.abs(it.eaSegunCuota-it.eaUsada)>1) out.push(`<p class="alert warn" style="margin:12px 0 0">Ojo: con la cuota que escribiste, la tasa real sería de unos <b>${pctTxt(it.eaSegunCuota)}% E.A.</b>, no ${pctTxt(it.eaUsada)}%. Revisa si el seguro u otros cargos están incluidos en lo que pagas, o si la tasa es distinta.</p>`);
+  if(it.nCalc) out.push(`<p class="alert ok" style="margin:12px 0 0">Con tu tasa y tu cuota, te faltan unas <b>${it.n} cuotas</b>: terminas en ${monthName(idxKey(it.fin))}.</p>`);
+  if(k.cuotaNeta>0 && k.cargos>0) out.push(`<p class="subtle" style="margin:10px 0 0">Tu pago de ${money(k.cuotaNeta+k.cargos)} = capital e intereses ${money(k.cuotaNeta)}${+cr.seguro?` + seguro ${money(cr.seguro)}`:""}${+cr.otros?` + otros cargos ${money(cr.otros)}`:""}. Si tienes varios créditos con el mismo banco y el seguro se cobra en uno solo, escríbelo solo en ese.</p>`);
+  return out.join("");
+}
 function vCreditos(m,c){
   const M=mIdx(m.mes);
   const list = S.perfil.creditos.map((cr,ix)=>{
@@ -694,23 +705,27 @@ function vCreditos(m,c){
         ${sIn("creditos",cr.id,"tipo",opts(TIPOS_CUOTAS,cr.tipo),"Tipo")}
         ${mIn("creditos",cr.id,"valor",cr.valor,"Valor prestado")}
         ${nIn("creditos",cr.id,"cuotas",cr.cuotas,"Número de cuotas","12")}
-        ${nIn("creditos",cr.id,"tasa",cr.tasa,"Tasa de interés %","0")}
+        ${nIn("creditos",cr.id,"tasa",cr.tasa,"Tasa de interés %",(+cr.cuotaReal||0)>0?"Vacía: la calculo":"Ej: 26,5")}
         ${sIn("creditos",cr.id,"tipoTasa",`<option value="EA" ${cr.tipoTasa!=="MV"?"selected":""}>Efectiva anual (E.A.)</option><option value="MV" ${cr.tipoTasa==="MV"?"selected":""}>Mes vencido (M.V.)</option>`,"La tasa es")}
         ${sIn("creditos",cr.id,"sistema",SIS_OPTS(cr.sistema),"Cómo se cobran las cuotas")}
-        <label>Mes del primer pago<input type="month" data-b="creditos|${cr.id}|primerPago|text" value="${esc(cr.primerPago||"")}"></label>
-        ${mIn("creditos",cr.id,"cuotaReal",cr.cuotaReal||"","Cuota según tu extracto (opcional)")}
-        ${mIn("creditos",cr.id,"seguro",cr.seguro||"","Seguro u otros cargos al mes")}
+        <label>Fecha de la primera cuota<input type="date" data-b="creditos|${cr.id}|primerPago|text" value="${esc(fechaCompleta(cr.primerPago,cr.diaPago))}"></label>
+        ${mIn("creditos",cr.id,"cuotaReal",cr.cuotaReal||"","Lo que pagas cada mes (según tu extracto)")}
+        ${mIn("creditos",cr.id,"seguro",cr.seguro||"","Seguro al mes")}
+        ${mIn("creditos",cr.id,"otros",cr.otros||"","Otros cargos al mes (comisión, administración…)")}
+        ${sIn("creditos",cr.id,"segIncl",`<option value="si" ${cr.segIncl?"selected":""}>Sí, ya están dentro de lo que pago</option><option value="no" ${!cr.segIncl?"selected":""}>No, se cobran aparte</option>`,"¿El seguro y los cargos están incluidos en lo que pagas?")}
         ${nIn("creditos",cr.id,"diaPago",cr.diaPago,"Día del mes en que pagas","Ej: 5")}
         ${mIn("creditos",cr.id,"planExtra",cr.planExtra||"","Abono extra que planeas al mes")}
       </div>
+      ${notaCredito(cr,k)}
       <h3 class="sub-h">${cap(monthName(m.mes))} ${estadoBadge(k)} ${deudaBadge(k)}${k.vencido?` <span class="badge bad">Plazo vencido</span>`:""}</h3>
       <div class="stats">
-        <div class="stat"><div class="k">Te toca pagar</div><div class="v num">${money(k.min)}</div><div class="s">${k.min<=0.5?(k.estadoDeuda==="noempieza"?"aún no empieza":"no debes nada"):`${n}${(+cr.cuotaReal||0)>0?" · cuota de tu extracto":" · cuota calculada"}${k.mora>0.5?` + atrasado ${money(k.mora)}`:""}`}</div></div>
-        <div class="stat"><div class="k">Pagaste</div><div class="v num ok">${money(k.pagado+k.abonos)}</div><div class="s">${k.abonos?`incluye ${money(k.abonos)} de abono extra`:"pago del mes"}</div></div>
+        <div class="stat"><div class="k">Te toca pagar</div><div class="v num">${money(k.min)}</div><div class="s">${k.min<=0.5?(k.estadoDeuda==="noempieza"?"aún no empieza":"no debes nada"):`${n}${(+cr.cuotaReal||0)>0?" · según tu extracto":" · cuota calculada"}${k.cargos>0.5?` (incluye ${money(k.cargos)} de seguro y cargos)`:""}${k.mora>0.5?` + atrasado ${money(k.mora)}`:""}`}</div></div>
+        <div class="stat"><div class="k">Pagaste</div><div class="v num ok">${money(k.pagado+k.abonos)}</div><div class="s">${k.abonoExtra>0.5?`incluye ${money(k.abonoExtra)} de más`:"pago del mes"}</div></div>
+        <div class="stat"><div class="k">Abonaste a capital</div><div class="v num ok">${money(k.pagoCapital)}</div><div class="s">${k.pagado+k.abonos>0.5?`intereses ${money(k.pagoInteres)}${k.pagoCargos>0.5?` · seguro y cargos ${money(k.pagoCargos)}`:""}`:"cuando pagues, verás cuánto bajó tu deuda"}</div></div>
         <div class="stat"><div class="k">Te falta pagar</div><div class="v num ${k.falta>0.5?"bad":"ok"}">${money(k.falta)}</div></div>
-        <div class="stat"><div class="k">${M===mIdx(thisMonth())?"Debes hoy":(M<mIdx(thisMonth())?"Debías al final del mes":"Deberías al final del mes")}</div><div class="v num">${money(k.deuda)}</div></div>
+        <div class="stat"><div class="k">${M===mIdx(thisMonth())?"Debes hoy":(M<mIdx(thisMonth())?"Debías al final del mes":"Deberías al final del mes")}</div><div class="v num">${money(k.deuda)}</div><div class="s">${k.capitalTotal>0.5?`has abonado ${money(k.capitalTotal)} a capital desde ${monthName(S.perfil.inicio)}`:""}</div></div>
         <div class="stat"><div class="k">Última cuota del plan</div><div class="v num">${it.V>0?monthShort(idxKey(it.fin)):"—"}</div><div class="s">${it.V>0?`${Math.max(0,it.fin-M)} mes(es) después de este`:""}</div></div>
-        <div class="stat"><div class="k">Intereses</div><div class="v num bad">${money(k.interes)}</div><div class="s">este mes · ${money(it.interesTotal())} en todo el crédito</div></div>
+        <div class="stat"><div class="k">Intereses</div><div class="v num bad">${money(k.interes)}</div><div class="s">este mes · ${money(k.cuotaNeta>0&&it.n>1?Math.max(0,k.cuotaNeta*it.n-it.V):it.interesTotal())} en todo el crédito</div></div>
       </div>
       ${payBlock(cr.id,k,m)}
       ${evalBox(k,cr.nombre)}
@@ -720,7 +735,7 @@ function vCreditos(m,c){
   }).join("");
   return `<section class="panel">
     <div class="listhead"><h2>Créditos de cuotas ${hb("creditos")}</h2><span class="total num">${money(sum(c.cc,x=>x.deuda))} pendiente</span></div>
-    <p class="hint"><b>No rotativo</b> = te prestan una sola vez y lo pagas en cuotas; lo que pagas no se vuelve a usar. Cuando el saldo llega a $0 queda <b>Pagado</b> y luego <b>Cerrado</b>. Créditos, compras a cuotas en almacenes o apps, celulares, estudio, préstamos. Escribe el valor que te prestaron, las cuotas, la tasa y el mes del primer pago: la cuota, en qué cuota vas y lo que debes se calculan solos. ¿Crédito viejo? Pon el valor original y el mes real del primer pago, o lo que debes hoy con las cuotas que faltan y este mes como primer pago. Si tu cuota real es distinta, escríbela.</p>
+    <p class="hint"><b>No rotativo</b> = te prestan una sola vez y lo pagas en cuotas; lo que pagas no se vuelve a usar. Escribe cuánto te prestaron, en cuántas cuotas, la fecha de la primera cuota y lo que pagas cada mes. Si no sabes la tasa, déjala vacía y la calculo. Cuando el saldo llega a $0 queda <b>Pagado</b>.</p>
     ${list || `<div class="empty">No tienes créditos registrados.</div>`}
     <button class="btn" data-act="add" data-c="creditos">Agregar crédito</button>
   </section>${resumenDeudas(c)}`;
@@ -1031,10 +1046,10 @@ const AYUDA = [
  {id:"gastos", t:"Gastos fijos", h:`<p>Lo que pagas siempre: arriendo, servicios, mercado, transporte, estudio…</p><p>Los gastos que pagas cada 6 meses o una vez al año (como el SOAT o una matrícula) se reparten mes a mes, para que vayas apartando un poco cada mes.</p><p>Si un gasto lo pagas con tarjeta de crédito, elige la tarjeta en “Se paga con”: no sale de tu efectivo ese mes, pero se suma a lo que debes en la tarjeta.</p>`},
  {id:"hormiga", t:"Gastos hormiga", h:`<p>Son los gastos pequeños que no se sienten: el tinto, la gaseosa, el domicilio, el snack. Uno solo no es nada, pero juntos suman mucho al año.</p><p>En Hoy toca el botón de lo que compraste; la app pone el último valor que pagaste por eso. Toca <b>Anotar</b> y listo.</p>`},
  {id:"tarjetas", t:"Tarjetas y cupos (rotativos)", h:`<p><b>Rotativo</b> quiere decir que tienes un <b>cupo</b>: lo que pagas se libera y lo puedes volver a usar. Aquí van las tarjetas de crédito, los créditos rotativos y los cupos de almacén o apps.</p><p><b>Lo mínimo que necesitas:</b> el nombre, la tasa de interés (está en tu extracto) y lo que debes.</p><ul><li>¿Ya debías plata en la tarjeta? Agrégalo como una compra “Saldo anterior” con las cuotas que te faltan.</li><li>Cada compra nueva se anota con su número de cuotas.</li><li>El <b>pago mínimo</b> se calcula solo. Si tu extracto dice otro valor, escríbelo.</li><li>Si pones el <b>día de pago</b>, te lo recordamos en Hoy.</li></ul>`},
- {id:"creditos", t:"Créditos de cuotas", h:`<p>Te prestan una sola vez y lo pagas en cuotas; lo que pagas no se vuelve a usar. Libre inversión, libranza, carro, vivienda, estudio, celular financiado…</p><p>Escribe lo que te prestaron (o lo que debes hoy), cuántas cuotas faltan y la tasa. Si tu cuota real es distinta a la calculada, escríbela en “Cuota según tu extracto”. Cuando llega a $0 queda <b>Pagado</b>.</p>`},
+ {id:"creditos", t:"Créditos de cuotas", h:`<p>Te prestan una sola vez y lo pagas en cuotas; lo que pagas no se vuelve a usar. Libre inversión, libranza, carro, vivienda, estudio, celular financiado…</p><p>Escribe cuánto te prestaron, en cuántas cuotas y la <b>fecha de la primera cuota</b>: con eso la app sabe en qué cuota vas y cuánto debes.</p><ul><li><b>Lo que pagas cada mes:</b> el valor de tu extracto. Si no sabes la tasa, déjala vacía: la app la calcula con lo que pagas.</li><li><b>Seguro y otros cargos:</b> escríbelos y di si ya están dentro de lo que pagas. Así no se suman dos veces y la tasa sale bien. Si tienes varios créditos con el mismo banco y el seguro se cobra en uno solo, ponlo solo en ese.</li><li>Si no sabes cuántas cuotas faltan, deja ese campo vacío: con la tasa y la cuota se calcula.</li></ul><p>Cuando llega a $0 queda <b>Pagado</b>.</p>`},
  {id:"prestamos", t:"Préstamos con amigos o familia", h:`<p>En la pestaña <b>Préstamos</b> anotas:</p><ul><li><b>Le debo a…</b>: plata que te prestaron.</li><li><b>Me deben…</b>: plata que tú prestaste.</li></ul><p>Para cada uno eliges cómo se paga: <b>todo en una fecha</b>, <b>en cuotas mensuales</b> o <b>sin fecha fija</b>. Si cobran algo adicional, puede ser un valor fijo (por ejemplo, $50.000 más) o un % al mes.</p><p>Lo que vence cada mes de lo que debes se aparta de tu presupuesto. Cuando pagas o te pagan, toca <b>Registrar pago</b> o <b>Registrar cobro</b>.</p>`},
  {id:"fechas", t:"Fechas de pago y recordatorios", h:`<p>En Hoy aparecen los pagos y cobros de los próximos 15 días: préstamos con fecha, y tarjetas o créditos que tengan <b>día de pago</b>. Si algo ya pasó y no lo has pagado, sale en rojo como <b>Vencido</b>.</p><p>Para que una tarjeta o crédito aparezca, abre su cuadro y escribe el “Día del mes en que pagas”.</p>`},
- {id:"pagos", t:"Pago del mes y abono extra", h:`<ul><li><b>Pago del mes:</b> lo que te tocaba pagar (la cuota o el mínimo).</li><li><b>Abono extra a capital:</b> plata de más para salir antes de la deuda. Así pagas menos intereses.</li></ul><p>Si pagas menos de lo que te tocaba, lo que falta pasa al mes siguiente como <b>atrasado</b>.</p>`},
+ {id:"pagos", t:"Pago del mes y abono extra", h:`<ul><li><b>Pago del mes:</b> lo que te tocaba pagar (la cuota o el mínimo).</li><li><b>Abono extra a capital:</b> plata de más para salir antes de la deuda. Así pagas menos intereses.</li></ul><p>De cada pago, primero se cubren los intereses y el seguro o los cargos; lo que queda es <b>abono a capital</b>, lo único que de verdad baja tu deuda. En cada crédito verás cuánto fue a capital este mes y cuánto llevas en total.</p><p>Si pagas menos de lo que te tocaba, lo que falta pasa al mes siguiente como <b>atrasado</b>.</p>`},
  {id:"ahorros", t:"Ahorros, cajitas y CDT", h:`<p>Anota cada cuenta, cajita o bolsillo, CDT o fondo: cuándo lo abriste, con cuánto y cuánto rinde al año (% E.A.). Lo que metes o sacas lo registras en su cuadro.</p><p>La app te dice cuánto tienes, cuánto has ganado y cuánto tendrías en 12 meses. Los CDT no reciben aportes y dejan de crecer al vencer.</p><p>Si el saldo no coincide con tu banco, escribe el saldo real y la fecha: se parte de ahí.</p>`},
  {id:"metas", t:"Metas: carro, casa, viaje…", h:`<p>Escribe cuánto cuesta lo que quieres, qué % necesitas ahorrar (por ejemplo, 30% para la cuota inicial de una vivienda) y para cuándo. Luego elige qué ahorros suman para esa meta.</p><p>Verás tu avance, cuánto te falta, cuánto debes ahorrar al mes para llegar a tiempo y en qué mes llegarías a tu ritmo actual.</p>`},
  {id:"meses", t:"¿Qué pasa cuando cambia el mes?", h:`<p>Cuando abres la app en un mes nuevo, se crea sola: copia tus ingresos y gastos fijos del mes anterior. Los meses pasados quedan guardados y los comparas en <b>Comparar meses</b>.</p><p>Tarjetas, créditos, préstamos, ahorros y metas no son de un mes: siguen solos con sus cuotas y rendimientos.</p>`},
@@ -1071,15 +1086,10 @@ const FREQ_GAS=[["mensual","Mensual"],["quincenal","Quincenal"],["semanal","Sema
 const G_ING=["Sueldo","Trabajo extra","Negocio propio","Ventas","Arriendo que recibo","Pensión","Mesada o ayuda","Otro"];
 const G_GAS=[["Arriendo","Vivienda"],["Servicios públicos","Servicios"],["Internet y celular","Servicios"],["Mercado","Mercado"],["Transporte","Transporte"],["Estudio","Educación"],["Salud","Salud"],["Suscripciones","Ocio"],["Ayuda a la familia","Familia"],["Otro","Otros"]];
 const lastDayPrev = () => { const k=idxKey(mIdx(thisMonth())-1); return `${k}-${pad(daysIn(k))}`; };
-function tasaDesdeCuota(V,n,q){
-  if(!(V>0 && n>1 && q*n>V*1.001)) return null;
-  let lo=0, hi=1; for(let k=0;k<100;k++){ const mid=(lo+hi)/2, pm=V*mid/(1-Math.pow(1+mid,-n)); if(pm>q) hi=mid; else lo=mid; }
-  return (Math.pow(1+(lo+hi)/2,12)-1)*100;
-}
 function autoForm(paso){ const m=S.months[thisMonth()]; return paso==="ingresos"&&!m.ingresos.length ? "ingreso" : paso==="gastos"&&!m.gastos.length ? "gasto" : null; }
 function gDefaults(kind){
   return {ingreso:{frec:"mensual",tipo:"fijo"}, gasto:{frec:"mensual",cat:"Otros"}, tarjeta:{clase:"Tarjeta de crédito",cuotas:"1",pagado:"no"},
-    credito:{tipo:"Libre inversión",pagado:"no"}, debo:{fecha:todayISO(),forma:"unico",cargoTipo:"no",presu:false}, medeben:{fecha:todayISO(),forma:"unico",cargoTipo:"no",presu:false},
+    credito:{tipo:"Libre inversión",pagado:"no",cargosSi:"no",tipoTasa:"EA"}, debo:{fecha:todayISO(),forma:"unico",cargoTipo:"no",presu:false}, medeben:{fecha:todayISO(),forma:"unico",cargoTipo:"no",presu:false},
     ahorro:{tipo:"Cuenta de ahorros",apertura:todayISO()}, meta:{tipo:"Carro o moto",pago:"contado",cuentas:[]}}[kind]||{};
 }
 function vGuia(){
@@ -1127,7 +1137,7 @@ function vGuia(){
   } else if(paso==="deudas"){
     const items = [
       ...S.perfil.tarjetas.map(x=>gItem(`💳 <b>${esc(x.nombre||"Tarjeta")}</b> · ${esc(x.clase||"Tarjeta de crédito")}`,"tarjetas",x.id)),
-      ...S.perfil.creditos.map(x=>gItem(`🏦 <b>${esc(x.nombre||"Crédito")}</b> · debes ${money(x.valor)}`,"creditos",x.id)),
+      ...S.perfil.creditos.map(x=>gItem(`🏦 <b>${esc(x.nombre||"Crédito")}</b> · ${(+x.cuotaReal)?`pagas ${money(x.cuotaReal)} al mes`:`${money(x.valor)}`}`,"creditos",x.id)),
       ...(S.perfil.prestamos||[]).map(x=>gItem(`${x.dir==="debo"?"🤝 Le debes a":"💸 Te debe"} <b>${esc(x.persona||"alguien")}</b> · ${money(x.valor)}`,"prestamos",x.id))];
     const list = items.length ? `<div class="glist">${items.join("")}</div>` : "";
     if(g.done) body = list + (items.length ? bub(`¡Listo! Tus deudas quedaron guardadas ✓`) : bub(`¡Qué bien, sin deudas! 🙌`))
@@ -1143,16 +1153,22 @@ function vGuia(){
         ${gq("¿Qué día del mes la pagas?", gin("diaPago","Ej: 15",{money:true}), "Opcional. Te lo recuerdo en la pantalla Hoy.")}
         ${gq("¿Ya hiciste el pago de este mes?", gchips("pagado",[["no","Todavía no"],["si","Sí, ya pagué"]],t.pagado))}
         <div class="gbtns"><button class="btn primary big" data-act="gSave" data-v="tarjeta">Guardar tarjeta</button>${cancelar}</div></div>`;
-    else if(g.form==="credito") body = list + bub(`Cuéntame de tu crédito. Con lo que debes hoy y las cuotas que te faltan es suficiente.`) + `<div class="gform">
-        ${gq("¿Con quién es?", gin("nombre","Ej: Banco de Bogotá, Claro…"))}
-        ${gq("¿Qué tipo de crédito es?", gchips("tipo",[["Libre inversión","Libre inversión"],["Libranza","Libranza"],["Vehículo","Carro o moto"],["Vivienda (hipotecario o leasing)","Vivienda"],["Estudio","Estudio"],["Celular o equipo financiado","Celular o equipo"],["Compra a cuotas en almacén","Compra en almacén"],["Otro","Otro"]],t.tipo))}
-        ${gq("¿Cuánto debes hoy?", gin("debe","$ 0",{money:true,big:true}))}
-        ${gq("¿Cuántas cuotas te faltan?", gin("cuotas","Ej: 12",{money:true}))}
-        ${gq("¿De cuánto es la cuota mensual?", gin("cuota","$ 0",{money:true}), "Opcional, pero ayuda: con ella calculo la tasa si no la sabes.")}
-        ${gq("¿Qué tasa de interés tiene? (% E.A.)", gin("tasa","Ej: 26",{dec:true}), "Opcional. Si no la sabes, déjala vacía.")}
-        ${gq("¿Qué día del mes la pagas?", gin("diaPago","Ej: 5",{money:true}), "Opcional. Te lo recuerdo en la pantalla Hoy.")}
+    else if(g.form==="credito"){
+      const q=parseMoney(t.cuota), V=parseMoney(t.valor), nn=parseMoney(t.cuotas), car=t.cargosSi==="si"?parseMoney(t.seguro)+parseMoney(t.otros):0;
+      const iInf = (t.tasa||"").trim()==="" && q>0 ? tasaDesdeCuota(V, nn, Math.max(0,q-car)) : null;
+      body = list + bub(`Cuéntame de tu crédito. Si tienes el contrato o un extracto a la mano, mejor.`) + `<div class="gform">
+        ${gq("¿Con quién es?", gin("nombre","Ej: Bancolombia, Davivienda, Claro…"))}
+        ${gq("¿Qué tipo de crédito es?", gchips("tipo",[["Libre inversión","Libre inversión"],["Libre inversión con garantía de vivienda","Libre inversión con garantía de casa"],["Libre inversión con garantía de vehículo","Libre inversión con garantía de vehículo"],["Libranza","Libranza"],["Vehículo","Para comprar carro o moto"],["Vivienda (hipotecario o leasing)","Vivienda"],["Estudio","Estudio"],["Celular o equipo financiado","Celular o equipo"],["Compra a cuotas en almacén","Compra en almacén"],["Otro","Otro"]],t.tipo))}
+        ${gq("¿Cuánto te prestaron?", gin("valor","$ 0",{money:true,big:true}), "El valor del crédito cuando te lo dieron.")}
+        ${gq("¿En cuántas cuotas en total?", gin("cuotas","Ej: 60",{money:true}), "Todas, no solo las que faltan. Si no sabes, déjalo vacío y lo calculo con tu cuota y tu tasa.")}
+        ${gq("¿Cuándo fue (o será) tu primera cuota?", gin("primerPago","",{type:"date"}), "Sale en tu contrato o en tu primer extracto. Con esta fecha sé en qué cuota vas.")}
+        ${gq("¿Cuánto pagas cada mes en total?", gin("cuota","$ 0",{money:true}), "Lo que te sale en el extracto para pagar.")}
+        ${gq("¿Dentro de ese pago te cobran seguro u otros cargos?", gchips("cargosSi",[["no","No"],["si","Sí"],["nose","No sé"]],t.cargosSi))}
+        ${t.cargosSi==="si"?gq("¿Cuánto es el seguro al mes?", gin("seguro","$ 0",{money:true}), "Si tienes varios créditos con el mismo banco y el seguro se cobra en uno solo, ponlo solo en ese.")+gq("¿Algún otro cargo al mes? (comisión, administración…)", gin("otros","$ 0",{money:true}), "Opcional."):""}
+        ${gq("¿Qué tasa de interés tiene?", gin("tasa","Ej: 26,67",{dec:true})+gchips("tipoTasa",[["EA","Efectiva anual (E.A.)"],["MV","Mensual (M.V.)"]],t.tipoTasa), iInf!==null?`Si no la sabes, déjala vacía: con lo que pagas, la tasa sería de unos <b>${pctTxt((Math.pow(1+iInf,12)-1)*100)}% E.A.</b> (${pctTxt(iInf*100)}% mensual).`:"Si no la sabes, déjala vacía y la calculo con lo que pagas.")}
         ${gq("¿Ya pagaste la cuota de este mes?", gchips("pagado",[["no","Todavía no"],["si","Sí, ya pagué"]],t.pagado))}
         <div class="gbtns"><button class="btn primary big" data-act="gSave" data-v="credito">Guardar crédito</button>${cancelar}</div></div>`;
+    }
     else if(g.form==="debo"||g.form==="medeben"){
       const debo=g.form==="debo";
       body = list + bub(debo?`Cuéntame del préstamo. ¿A quién le debes y cómo quedaron de pagarle?`:`Anotemos quién te debe, para que no se te olvide cobrar.`) + `<div class="gform">
@@ -1251,12 +1267,22 @@ function guardarGuia(kind){
     savePerfil(); return {ok:"Tarjeta guardada"};
   }
   if(kind==="credito"){
-    const valor=parseMoney(t.debe); if(!valor) return "Escribe cuánto debes.";
-    const n=Math.max(1,Math.round(parseMoney(t.cuotas)||1)), q=parseMoney(t.cuota);
-    let tasa=(t.tasa||"").trim()===""?"":parseNum(t.tasa), inf=null;
-    if(tasa==="" && q>0){ inf=tasaDesdeCuota(valor,n,q); if(inf) tasa=Math.round(inf*100)/100; }
-    S.perfil.creditos.push({id,nombre:(t.nombre||"").trim()||t.tipo||"Crédito",tipo:t.tipo||"Libre inversión",valor,cuotas:n,tasa,tipoTasa:"EA",sistema:"fija",primerPago:t.pagado==="si"?nextMonth(thisMonth()):thisMonth(),cuotaReal:q,seguro:0,planExtra:0,diaPago:dia});
-    savePerfil(); return {ok:"Crédito guardado", extra: inf ? `Por tu cuota, la tasa es de unos ${String(Math.round(inf*10)/10).replace(".",",")}% E.A.` : ""};
+    const valor=parseMoney(t.valor); if(!valor) return "Escribe cuánto te prestaron.";
+    if(!t.primerPago) return "Escribe la fecha de tu primera cuota.";
+    const q=parseMoney(t.cuota), n=parseMoney(t.cuotas)||"";
+    if(!n && !q) return "Escribe en cuántas cuotas es, o cuánto pagas cada mes.";
+    const cargos = t.cargosSi==="si";
+    const cr={id,nombre:(t.nombre||"").trim()||t.tipo||"Crédito",tipo:t.tipo||"Libre inversión",valor,cuotas:n,tasa:(t.tasa||"").trim()===""?"":parseNum(t.tasa),tipoTasa:t.tipoTasa||"EA",sistema:"fija",
+      primerPago:t.primerPago,cuotaReal:q,seguro:cargos?parseMoney(t.seguro):0,otros:cargos?parseMoney(t.otros):0,segIncl:true,planExtra:0,diaPago:dia||+t.primerPago.slice(8,10)};
+    S.perfil.creditos.push(cr);
+    const M0=mIdx(thisMonth()), st=creditState(cr,ctx(),M0);
+    if(t.pagado==="si" && st.min>0.5) S.perfil.pagos.push({id:uid(),oblig:id,tipo:"pago",fecha:todayISO(),valor:Math.round(st.min)});
+    savePerfil();
+    const it=st.item, extras=[];
+    if(it.inferida) extras.push(`Por lo que pagas, la tasa es de unos ${pctTxt(it.eaUsada)}% E.A.`);
+    if(it.nCalc) extras.push(`Te faltan unas ${Math.max(0,it.fin-M0+1)} cuotas.`);
+    if(t.cargosSi==="nose") extras.push("Si después ves seguro u otros cargos en tu extracto, agrégalos en la pestaña Créditos.");
+    return {ok:"Crédito guardado", extra:extras.join(" ")};
   }
   if(kind==="debo"||kind==="medeben"){
     const valor=parseMoney(t.valor); if(!valor) return "Escribe cuánto fue el préstamo.";
@@ -1401,7 +1427,7 @@ document.addEventListener("click",async e=>{
     const d = { ingresos:{id,nombre:"",monto:0,frec:"mensual",tipo:"fijo"},
       gastos:{id,nombre:"",monto:0,frec:"mensual",cat:"Vivienda",tipo:"fijo",medio:"efectivo"},
       tarjetas:{id,nombre:"",clase:"Tarjeta de crédito",franquicia:"Visa",cupo:0,tasa:"",tipoTasa:"EA",sistema:"capital",manejo:0,cobraSiempre:true,planExtra:0,compras:[],minReal:{}},
-      creditos:{id,nombre:"",tipo:"Libre inversión",valor:0,cuotas:12,tasa:"",tipoTasa:"EA",sistema:"fija",primerPago:m.mes,cuotaReal:0,seguro:0,planExtra:0},
+      creditos:{id,nombre:"",tipo:"Libre inversión",valor:0,cuotas:12,tasa:"",tipoTasa:"EA",sistema:"fija",primerPago:"",cuotaReal:0,seguro:0,otros:0,segIncl:true,planExtra:0},
       ahorros:{id,nombre:"",tipo:"Cuenta de ahorros",entidad:"",apertura:todayISO(),inicial:0,tasa:"",aporte:0,plazo:"",retencion:0,saldoReal:0,fechaReal:"",meta:"",movs:[]},
       metas:{id,nombre:"",tipo:"Carro o moto",valor:0,porcentaje:100,fecha:"",extra:0},
       prestamos:{id,dir:b.dataset.v||"debo",persona:"",motivo:"",valor:0,fecha:todayISO(),forma:"unico",fechaPago:"",cuotas:2,cargoTipo:"no",cargo:0,pagos:[]} }[c];
@@ -1464,6 +1490,7 @@ document.addEventListener("click",async e=>{
 });
 document.addEventListener("change",e=>{
   if(!S.user) return;
+  if(S.guia && e.target.id && e.target.id.startsWith("g-")){ gSync(); scheduleRender(); return; }
   if(e.target.id==="monthSel"){ S.cur=e.target.value; S.confirmDel=false; render(); return; }
   const bnd = e.target.dataset.b; if(!bnd) return;
   const [coll,id,field,type] = bnd.split("|"); const m=M();
@@ -1471,7 +1498,8 @@ document.addEventListener("change",e=>{
   if(coll==="meta"){ m[field]=val===""?0:val; save(); }
   else if(coll==="minReal"){ const t=S.perfil.tarjetas.find(x=>x.id===id); if(!t) return; if(!t.minReal) t.minReal={};
     if(e.target.value.trim()==="") delete t.minReal[field]; else t.minReal[field]=val; savePerfil(); }
-  else { const {obj}=findColl(m,coll,id); if(!obj) return; obj[field]= field==="cobraSiempre" ? (val!=="no") : val;
+  else { const {obj}=findColl(m,coll,id); if(!obj) return; obj[field]= field==="cobraSiempre" ? (val!=="no") : field==="segIncl" ? (val==="si") : val;
+    if(coll==="creditos" && field==="primerPago" && /^\d{4}-\d{2}-\d{2}$/.test(val)) obj.diaPago = +val.slice(8,10);
     if(coll==="metas" && field==="tipo"){ if(val==="Cuota inicial de vivienda" && (+obj.porcentaje===100||obj.porcentaje==="")) obj.porcentaje=30; if(val!=="Cuota inicial de vivienda" && val!=="Carro o moto" && +obj.porcentaje===30) obj.porcentaje=100; if(!obj.nombre) obj.nombre=val; }
     if(coll==="ahorros" && field==="tipo" && val==="CDT" && !obj.retencion) obj.retencion=4;
     saveFor(coll); }

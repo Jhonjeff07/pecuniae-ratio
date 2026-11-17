@@ -18,7 +18,7 @@ export function tasaEA(t, tipo) { const r = (+t || 0) / 100; return tipo === "MV
 
 // Clases de crédito
 export const CLASES_ROTATIVAS = ["Tarjeta de crédito", "Crédito rotativo", "Cupo en almacén o app"];
-export const TIPOS_CUOTAS = ["Libre inversión", "Libranza", "Vehículo", "Vivienda (hipotecario o leasing)", "Estudio", "Celular o equipo financiado", "Compra a cuotas en almacén", "Préstamo personal", "Otro"];
+export const TIPOS_CUOTAS = ["Libre inversión", "Libre inversión con garantía de vivienda", "Libre inversión con garantía de vehículo", "Libranza", "Vehículo", "Vivienda (hipotecario o leasing)", "Estudio", "Celular o equipo financiado", "Compra a cuotas en almacén", "Préstamo personal", "Otro"];
 
 // Una compra o préstamo a cuotas (plan del banco)
 export function makeItem({ V, n, i, sistema, start, buy }) {
@@ -59,10 +59,35 @@ export function cardItems(card) {
     const it = makeItem({ V: c.valor, n: c.cuotas, i, sistema: card.sistema, start, buy }); it.ref = c; return it;
   });
 }
+// Tasa mensual que explica una cuota fija (capital + intereses): resuelve V·i/(1-(1+i)^-n) = q
+export function tasaDesdeCuota(V, n, q) {
+  V = +V || 0; n = Math.round(+n || 0); q = +q || 0;
+  if (!(V > 0 && n > 1 && q * n > V * 1.0005)) return null;
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 100; k++) { const mid = (lo + hi) / 2, pm = V * mid / (1 - Math.pow(1 + mid, -n)); if (pm > q) hi = mid; else lo = mid; }
+  return (lo + hi) / 2;
+}
+// Lo que pagas cada mes se reparte en: capital + intereses (cuota neta) y cargos (seguro + otros).
+export function creditoCargos(cr) { return (+cr.seguro || 0) + (+cr.otros || 0); }
+export function cuotaNeta(cr) {
+  const q = +cr.cuotaReal || 0; if (!(q > 0)) return 0;
+  return cr.segIncl ? Math.max(0, q - creditoCargos(cr)) : q;
+}
+const tasaVacia = t => t === "" || t === null || t === undefined;
 export function creditItem(cr, ctx) {
   const start = cr.primerPago ? mIdx(cr.primerPago) : ctx.cur;
-  const it = makeItem({ V: cr.valor, n: cr.cuotas, i: tasaMes(cr.tasa, cr.tipoTasa), sistema: cr.sistema, start, buy: start - 1 });
-  it.ref = cr; return it;
+  const V = +cr.valor || 0, q = cuotaNeta(cr);
+  let n = Math.round(+cr.cuotas || 0), i = tasaMes(cr.tasa, cr.tipoTasa), inferida = false, nCalc = false;
+  if (tasaVacia(cr.tasa) && q > 0 && n > 1) { const x = tasaDesdeCuota(V, n, q); if (x !== null) { i = x; inferida = true; } }
+  if (!(n > 0) && q > 0 && V > 0) { // no sabe cuántas cuotas: se calculan con la tasa y la cuota
+    if (i > 0 && q > V * i) n = Math.ceil(-Math.log(1 - V * i / q) / Math.log(1 + i)); else if (i === 0) n = Math.ceil(V / q);
+    nCalc = n > 0;
+  }
+  const it = makeItem({ V, n: n > 0 ? n : 1, i, sistema: cr.sistema, start, buy: start - 1 });
+  it.ref = cr; it.inferida = inferida; it.nCalc = nCalc;
+  it.eaUsada = (Math.pow(1 + it.ie, 12) - 1) * 100;
+  if (!tasaVacia(cr.tasa) && q > 0 && n > 1) { const x = tasaDesdeCuota(V, n, q); if (x !== null) it.eaSegunCuota = (Math.pow(1 + x, 12) - 1) * 100; }
+  return it;
 }
 function pagosMes(id, ctx, X) {
   const k = idxKey(X); let pago = 0, abono = 0;
@@ -98,7 +123,7 @@ function simCard(card, ctx, upto, plan) {
   return { rows, items, all };
 }
 function simCredit(cr, ctx, upto, plan) {
-  const it = creditItem(cr, ctx), seguro = +cr.seguro || 0, cuotaReal = +cr.cuotaReal || 0;
+  const it = creditItem(cr, ctx), seguro = creditoCargos(cr), cuotaReal = cuotaNeta(cr);
   let B = it.buy < ctx.start ? it.capital(ctx.start - 1) : 0;
   const rows = []; let prev = null;
   for (let X = ctx.start; X <= upto; X++) {
@@ -115,6 +140,13 @@ function simCredit(cr, ctx, upto, plan) {
     rows.push(prev); B = Bn;
   }
   return { rows, item: it };
+}
+// A dónde fue lo que pagaste: intereses, seguro/cargos y capital (lo que de verdad baja la deuda)
+function desglose(rows, r, M, ctx) {
+  const parte = x => { const P = x.pago + x.abono; const aInt = Math.min(P, x.INT), aCar = Math.min(P - aInt, x.MAN); return { P, aInt, aCar, aCap: Math.max(0, P - aInt - aCar) }; };
+  const d = r && M <= ctx.cur ? parte(r) : { P: 0, aInt: 0, aCar: 0, aCap: 0 };
+  let capTotal = 0; for (const x of rows) { if (x.X > Math.min(M, ctx.cur)) break; capTotal += parte(x).aCap; }
+  return { pagoInteres: d.aInt, pagoCargos: d.aCar, pagoCapital: d.aCap, abonoExtra: r && M <= ctx.cur ? Math.max(0, d.P - r.MIN) : 0, capitalTotal: capTotal };
 }
 // Cuándo terminas y cuánto pagas de intereses desde el mes M (sin contar cargos nuevos del mes)
 function proyeccion(rows, M) {
@@ -161,6 +193,7 @@ export function cardState(card, ctx, M) {
   else estadoDeuda = "aldia";                                        // la usó y ya pagó todo
   const ev = evaluar(base, withPlan, M, plan);
   return {
+    ...desglose(rows, r, M, ctx),
     clase: "rotativo", rows, r, min, minCalc: r ? r.MINcalc : 0, minReal: (card.minReal || {})[idxKey(M)],
     pagado, abonos, falta, deuda, deudaInicio: r ? r.B0 : 0, interes: r ? r.INT : 0, manejo: r ? r.MAN : 0,
     mora: r ? r.MORA : 0, capDue: r ? r.CAP : 0, aFavor: r ? r.aFavor : 0,
@@ -185,9 +218,10 @@ export function creditState(cr, ctx, M) {
   const ev = evaluar(base, withPlan, M, plan);
   const cuotaN = M - it.start + 1;
   return {
+    ...desglose(rows, r, M, ctx), cargos: creditoCargos(cr), cuotaNeta: cuotaNeta(cr),
     clase: "cuotas", rows, r, item: it, min, pagado, abonos, falta, deuda, deudaInicio: r ? r.B0 : 0, interes: r ? r.INT : 0,
     seguro: r ? r.MAN : 0, mora: r ? r.MORA : 0, aFavor: r ? r.aFavor : 0, estado: estadoPago(r, M, ctx.cur), estadoDeuda,
-    cuotaN, ea: tasaEA(cr.tasa, cr.tipoTasa), eval: ev, plan, vencido: M > it.fin && deuda > 0.5,
+    cuotaN, ea: it.eaUsada / 100, eval: ev, plan, vencido: M > it.fin && deuda > 0.5,
     minOf: X => { const x = rows.find(y => y.X === X); return x ? x.MIN : 0; },
     deudaEn: X => { const x = rows.find(y => y.X === X); return x ? x.B : 0; }
   };
