@@ -4,7 +4,8 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, reauthenticateWithPopup, 
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, getDocs, getDoc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { ahorroEn, proyectarAhorro, metaEstado, TIPOS_AHORRO, TIPOS_META, toDate, addMonths } from "./ahorros.js";
 import { abrirTeclado, cerrarTeclado, crearPin, pinCorrecto, tecladoAbierto, limpiarFallos, mensajeTeclado } from "./clave.js";
-import { prestamoEstado, venceEnMes, iso2t } from "./prestamos.js";
+import { interpretar, aprenderDe } from "./frase.js";
+import { prestamoEstado, venceEnMes, iso2t, addMonthsISO } from "./prestamos.js";
 import { mIdx, idxKey, daysIn, FREQ, factor, tasaMes, cardState, creditState, consejos, ordenPago, CLASES_ROTATIVAS, TIPOS_CUOTAS, cuotaNeta, tasaDesdeCuota } from "./engine.js";
 
 // ---------- Utilidades ----------
@@ -30,7 +31,7 @@ const LOGO = "icons/logo.svg";
 const MIN_FUERA = 5;   // minutos en segundo plano antes de volver a pedir la clave
 const sum = (a,f) => a.reduce((s,x)=>s+(f?f(x):x),0);
 
-const CAT_GASTO = ["Vivienda","Servicios","Mercado","Transporte","Educación","Salud","Personal","Ocio","Hogar","Familia","Otros"];
+const CAT_GASTO = ["Vivienda","Servicios","Mercado","Transporte","Educación","Salud","Personal","Ocio","Suscripciones","Hogar","Familia","Otros"];
 const CAT_MOV = ["Comida","Mercado","Transporte","Ocio","Personal","Salud","Hogar","Otros"];
 const CAT_HORMIGA = ["Tinto o café","Gaseosa o jugo","Snack o dulce","Domicilio","Apps y suscripciones","Transporte corto","Cigarrillos","Antojo","Otro"];
 const GOOGLE_SVG = `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>`;
@@ -388,6 +389,7 @@ function vHoy(m,c){
     </div>
     ${alerta}
   </section>
+  ${dimelo(m)}
   ${hormigaRapida(m,c)}
   ${proximosPagos(m,c)}
   ${comoVaTodo(m,c)}
@@ -520,6 +522,100 @@ function quickForm(m,pfx,{tipo}={}){
       <button class="btn primary" data-act="addMov" data-f="${pfx}">Anotar</button>
     </div>`;
 }
+// Guarda un movimiento (lo usan el formulario, la hormiga y la voz) y avisa topes o cuotas
+function registrarMov(m,{fecha,tipo,monto,desc,cat,medio,cuotas}){
+  const tarj = medio && medio!=="efectivo" ? S.perfil.tarjetas.find(x=>x.id===medio) : null;
+  if(!tarj) medio="efectivo";
+  cuotas = tipo==="gasto" && tarj ? Math.max(1,Math.min(120,cuotas||1)) : 1;
+  const mov={id:uid(),fecha,tipo,monto,desc:desc||"",cat,medio};
+  const antes = alertasTopes(m).map(a=>a.cat+a.nivel).join();
+  if(cuotas>1){ const cid=uid(); tarj.compras.push({id:cid,fecha,desc:desc||cat,valor:monto,cuotas,primerCobro:"",movId:mov.id}); mov.cuotas=cuotas; mov.compraId=cid; savePerfil(); }
+  m.movs.push(mov);
+  save(); render();
+  const nueva = alertasTopes(m).find(a=>!antes.includes(a.cat+a.nivel) && (a.cat===(tipo==="hormiga"?"Gastos hormiga":(CAT_MOV.includes(cat)?cat:"Otros"))));
+  if(nueva) toast(nueva.nivel==="bad" ? `Anotado. Ojo: te pasaste del tope de ${nueva.cat} (${money(nueva.v)} de ${money(nueva.t)}).` : `Anotado. Llevas el ${Math.round(nueva.v/nueva.t*100)}% de tu tope de ${nueva.cat}.`);
+  else if(cuotas>1) toast(`Compra de ${money(monto)} a ${cuotas} cuotas en la tarjeta ${tarj.nombre||""}. Cada mes se aparta la cuota.`);
+  else toast(`Anotaste ${money(monto)}${tipo==="hormiga"?" en gastos hormiga":tipo==="ingreso"?" de ingreso extra":""}.`);
+  return mov;
+}
+
+// ---------- Dímelo y lo anoto (voz o texto) ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const CAT_ING = ["Trabajo extra","Venta","Regalo","Reembolso","Otro"];
+const V_ICON = {gasto:"🧾",hormiga:"🐜",ingreso:"⬆️"};
+const V_TIPO = {gasto:"Gasto",hormiga:"Hormiga",ingreso:"Ingreso extra"};
+const C_ICON = {Comida:"🍽️",Mercado:"🛒",Transporte:"🚕",Ocio:"🎉",Personal:"👕",Salud:"💊",Hogar:"🏠",Otros:"📦","Trabajo extra":"🛵",Venta:"🏷️",Regalo:"🎁",Reembolso:"↩️",...H_ICON,Otro:"💵"};
+const EJEMPLOS = ["gasté 15 mil en almuerzo con la Nu","tinto 2.500","me pagaron 80 lucas de domicilios","ayer taxi 18 mil","mercado en el D1 87.500","tenis de 250 mil a 6 cuotas con tarjeta"];
+let rec = null;
+function vozEstado(){ if(!S.voz) S.voz={texto:"",over:{},prev:{},abierto:""}; return S.voz; }
+function vozInterpretar(){
+  const v=vozEstado();
+  const todos=Object.values(S.months).flatMap(mm=>mm.movs||[]);
+  const r=interpretar(v.texto,{hoy:todayISO(),tarjetas:S.perfil.tarjetas.map(t=>({id:t.id,nombre:t.nombre||""})),aprendido:aprenderDe(todos)});
+  const o=v.over;
+  if(o.tipo){ if(o.tipo!==r.tipo){ r.tipo=o.tipo; if(!o.cat) r.cat = r.tipo==="ingreso"?(CAT_ING.includes(r.cat)?r.cat:"Otro"):r.tipo==="hormiga"?(CAT_HORMIGA.includes(r.cat)?r.cat:"Otro"):(CAT_MOV.includes(r.cat)?r.cat:"Otros"); } }
+  if(o.cat) r.cat=o.cat;
+  if(o.medio!=null){ r.medio=o.medio; r.medioDuda=false; r.medioNombre = o.medio==="efectivo"?"":((S.perfil.tarjetas.find(t=>t.id===o.medio)||{}).nombre||""); }
+  if(r.tipo==="ingreso"){ r.medio="efectivo"; r.cuotas=1; }
+  if(r.medio==="efectivo") r.cuotas=1;
+  return r;
+}
+function dimelo(m){
+  if(m.mes!==thisMonth()) return "";
+  const v=vozEstado();
+  return `<section class="panel voz" aria-label="Anotar diciendo o escribiendo una frase">
+    <div class="listhead" style="margin-bottom:8px"><h2>Dímelo y lo anoto ${hb("voz")}</h2></div>
+    <div class="voz-bar ${v.escuchando?"oye":""}">
+      <input id="vozTxt" autocomplete="off" enterkeyhint="done" placeholder="Ej: ${esc(EJEMPLOS[new Date().getMinutes()%EJEMPLOS.length])}" value="${esc(v.texto)}" aria-label="Escribe o dicta qué gastaste o recibiste">
+      ${SR && !S.vozSinMic ? `<button class="mic ${v.escuchando?"on":""}" data-act="vozMic" aria-label="${v.escuchando?"Dejar de escuchar":"Hablar"}" aria-pressed="${!!v.escuchando}">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 1 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6-3.6a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.9V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.7a6 6 0 0 0 5-5.9Z"/></svg></button>`:""}
+    </div>
+    <div id="vozChips">${vozChips()}</div>
+  </section>`;
+}
+function vozChips(){
+  const v=vozEstado();
+  if(v.escuchando && !v.texto) return `<div class="voz-oye"><span class="ondas" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span> Te escucho… di algo como “almuerzo 15 mil”</div>`;
+  if(!v.texto.trim()) return `<p class="subtle voz-tip">${SR && !S.vozSinMic ? "Toca el micrófono y dilo, o escríbelo." : "Escríbelo, o toca el 🎤 de tu teclado para dictarlo."} La app entiende el valor, la categoría y cómo pagaste.</p>`;
+  const r=vozInterpretar(), hoy=todayISO();
+  const items=[];
+  items.push(["monto", r.monto?`💰 ${money(r.monto)}`:"💰 ¿Cuánto?", r.monto?"":"falta", ""]);
+  items.push(["tipo", `${V_ICON[r.tipo]} ${V_TIPO[r.tipo]}`, "", "vozTipo"]);
+  items.push(["cat", `${C_ICON[r.cat]||"🏷️"} ${esc(r.cat)}`, "", "vozCat"]);
+  if(r.tipo!=="ingreso") items.push(["medio", r.medio==="efectivo"?"💵 Efectivo":`💳 ${esc(r.medioNombre||"Tarjeta")}${r.medioDuda?" ?":""}`, r.medioDuda?"duda":"", "vozMedio"]);
+  if(r.cuotas>1 && r.medio!=="efectivo" && r.tipo==="gasto") items.push(["cuotas", `🧾 ${r.cuotas} cuotas`, "", ""]);
+  if(r.fecha && r.fecha!==hoy) items.push(["fecha", `📅 ${r.fecha===(()=>{const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().slice(0,10);})()?"Ayer":fechaCorta(r.fecha)}`, "", ""]);
+  if(r.desc) items.push(["desc", `“${esc(r.desc)}”`, "txt", ""]);
+  const prev=v.prev||{}, now={};
+  const html = items.map(([k,label,cl,act],i)=>{ now[k]=label; const nuevo = prev[k]!==label;
+    const tag = act?"button":"span";
+    return `<${tag} class="vchip ${cl} ${nuevo?"pop":""}" style="--i:${i}" ${act?`data-act="${act}" title="Toca para cambiar"`:""}>${label}${act?` <small aria-hidden="true">▾</small>`:""}</${tag}>`; }).join("");
+  v.prev=now;
+  let picker="";
+  if(v.abierto==="cat"){ const list = r.tipo==="ingreso"?CAT_ING:r.tipo==="hormiga"?CAT_HORMIGA:CAT_MOV;
+    picker=`<div class="vpick">${list.map(x=>`<button class="vopt ${x===r.cat?"on":""}" data-act="vozCatSel" data-v="${esc(x)}">${C_ICON[x]||""} ${esc(x)}</button>`).join("")}</div>`; }
+  if(v.abierto==="medio"){ picker=`<div class="vpick"><button class="vopt ${r.medio==="efectivo"?"on":""}" data-act="vozMedioSel" data-v="efectivo">💵 Efectivo, Nequi o débito</button>${S.perfil.tarjetas.map(t=>`<button class="vopt ${r.medio===t.id?"on":""}" data-act="vozMedioSel" data-v="${t.id}">💳 ${esc(t.nombre||"Tarjeta")}</button>`).join("")}</div>`; }
+  return `<div class="vchips" aria-live="polite">${html}</div>${picker}
+    <div class="voz-acc"><button class="btn primary" data-act="vozOk" ${r.monto?"":"disabled"}>${r.monto?`Anotar ${money(r.monto)}`:"Falta el valor"}</button><button class="btn ghost" data-act="vozBorrar">Borrar</button></div>`;
+}
+function vozPintar(){ const el=$("#vozChips"); if(el) el.innerHTML=vozChips(); }
+function vozEscuchar(){
+  const v=vozEstado();
+  if(v.escuchando && rec){ rec.stop(); return; }
+  try{ rec=new SR(); }catch(_){ S.vozSinMic=true; render(); return; }
+  rec.lang="es-CO"; rec.interimResults=true; rec.continuous=false; rec.maxAlternatives=1;
+  const base=v.texto && !/\s$/.test(v.texto) ? "" : v.texto;
+  v.escuchando=true; v.texto=base; v.over={}; v.abierto="";
+  const pintarBarra=()=>{ const bar=$(".voz-bar"), mic=$(".voz .mic"); if(bar) bar.classList.toggle("oye",!!v.escuchando); if(mic){ mic.classList.toggle("on",!!v.escuchando); mic.setAttribute("aria-pressed",!!v.escuchando); } };
+  rec.onresult=e=>{ let t=""; for(let i=0;i<e.results.length;i++) t+=e.results[i][0].transcript; v.texto=(base+t).trim(); const inp=$("#vozTxt"); if(inp) inp.value=v.texto; vozPintar(); };
+  rec.onerror=e=>{ const c=e.error||"";
+    if(c==="not-allowed"||c==="service-not-allowed") toast("Permite el micrófono para hablarle a la app, o escríbelo.");
+    else if(c==="no-speech") toast("No te escuché. Toca el micrófono e intenta otra vez.");
+    else if(c==="network"||c==="audio-capture"){ S.vozSinMic=true; toast("Este navegador no deja usar el micrófono aquí. Usa el 🎤 de tu teclado y escríbelo en el cuadro."); render(); } };
+  rec.onend=()=>{ v.escuchando=false; pintarBarra(); vozPintar(); };
+  try{ rec.start(); pintarBarra(); vozPintar(); }catch(_){ v.escuchando=false; }
+}
+
 function defDate(m){ return m.mes===thisMonth() ? todayISO() : m.mes+"-01"; }
 function movList(m,list){
   if(!list.length) return `<div class="empty">Aún no anotas nada este mes. Empieza con tu primer gasto de hoy.</div>`;
@@ -561,7 +657,7 @@ function vGastos(m,c){
   return `<section class="panel">
     <div class="listhead"><h2>Gastos planeados ${hb("gastos")}</h2><span class="total num">${money(c.gasTotal)} al mes</span></div>
     <p class="hint">Arriendo, servicios, mercado, transporte, matrícula, SOAT… Los gastos semestrales o anuales se reparten mes a mes para que vayas apartando. Si un gasto lo cargas a una tarjeta, elige la tarjeta: no sale de tu efectivo este mes, pero sube el saldo de esa tarjeta.</p>
-    <div class="rows">${m.gastos.length?m.gastos.map(x=>fold("g:"+x.id, sumRow(esc(x.nombre||"Gasto sin nombre"), `${money(x.monto)} ${FREQ_TXT(x.frec)} · ${esc(x.cat||"")}${x.medio&&x.medio!=="efectivo"?" · con tarjeta":""}`, `${money((+x.monto||0)*factor(x.frec,m.mes))}<small>al mes</small>`), `
+    <div class="rows">${m.gastos.length?m.gastos.map(x=>fold("g:"+x.id, sumRow(esc(x.nombre||"Gasto sin nombre"), `${money(x.monto)} ${FREQ_TXT(x.frec)} · ${esc(x.cat||"")}${x.medio&&x.medio!=="efectivo"?" · con tarjeta":""}${proximoCobro(x)?` · se cobra el ${fechaCorta(proximoCobro(x))}`:""}`, `${money((+x.monto||0)*factor(x.frec,m.mes))}<small>al mes</small>`), `
       <div class="row r-gas">
         ${tIn("gastos",x.id,"nombre",x.nombre,"Nombre","Ej: arriendo")}
         ${mIn("gastos",x.id,"monto",x.monto,"Valor")}
@@ -569,6 +665,7 @@ function vGastos(m,c){
         ${sIn("gastos",x.id,"cat",opts(CAT_GASTO,x.cat),"Categoría")}
         ${sIn("gastos",x.id,"tipo",`<option value="fijo" ${x.tipo!=="variable"?"selected":""}>Fijo</option><option value="variable" ${x.tipo==="variable"?"selected":""}>Variable</option>`,"Tipo")}
         ${sIn("gastos",x.id,"medio",medioOpts(m,x.medio,{efectivoLabel:"Efectivo"}),"Se paga con")}
+        ${x.frec==="mensual"?nIn("gastos",x.id,"dia",x.dia,"Día de cobro (opcional)","Ej: 15"):(MESES_FREC[x.frec]?`<label>Próximo cobro (opcional)<input type="date" data-b="gastos|${x.id}|proximo|text" value="${esc(x.proximo||"")}"></label>`:"")}
         <button class="icon-btn" data-act="del" data-c="gastos" data-id="${x.id}" aria-label="Borrar">✕</button>
         <div class="calc" style="grid-column:1/-1">Al mes: <b>${money((+x.monto||0)*factor(x.frec,m.mes))}</b>${["semestral","anual","bimestral","trimestral"].includes(x.frec)?" · aparta esto cada mes":""}</div>
       </div>`,"Gasto guardado")).join(""):`<div class="empty">Agrega tu primer gasto fijo, por ejemplo el arriendo.</div>`}
@@ -577,8 +674,44 @@ function vGastos(m,c){
     ${byGroup(m.gastos,"cat",Object.fromEntries(CAT_GASTO.map(x=>[x,x])),x=>(+x.monto||0)*factor(x.frec,m.mes))}
     ${reserva.length?`<p class="subtle" style="margin-top:12px">Para tus gastos de varios meses (${reserva.map(r=>esc(r.nombre||"sin nombre")).join(", ")}) conviene apartar ${money(sum(reserva,r=>(+r.monto||0)*factor(r.frec,m.mes)))} cada mes.</p>`:""}
   </section>
+  ${vSuscripciones(m)}
   ${enQueSeVa(m,c)}`;
 }
+// ---------- Fechas de cobro y suscripciones ----------
+const MESES_FREC = {bimestral:2,trimestral:3,semestral:6,anual:12};
+function proximoCobro(g, hoy=todayISO()){
+  if(g.frec==="mensual" && +g.dia>0){
+    const d=Math.min(31,Math.round(+g.dia)), k=thisMonth();
+    let f=`${k}-${pad(Math.min(d,daysIn(k)))}`;
+    if(f<hoy){ const k2=nextMonth(k); f=`${k2}-${pad(Math.min(d,daysIn(k2)))}`; }
+    return f;
+  }
+  const n=MESES_FREC[g.frec];
+  if(n && g.proximo && /^\d{4}-\d{2}-\d{2}$/.test(g.proximo)){ let f=g.proximo, i=0; while(f<hoy && i++<240) f=addMonthsISO(f,n); return f; }
+  return "";
+}
+const SUBS_POP = [["Netflix","🎬"],["Spotify","🎵"],["YouTube Premium","▶️"],["Disney+","🏰"],["Max","🎞️"],["Prime Video","📦"],["Apple / iCloud","🍎"],["Google One","☁️"],["ChatGPT","🤖"],["Plan del celular","📱"],["Internet de la casa","📶"],["Gimnasio","🏋️"]];
+const subIcono = n => { const k=(n||"").toLowerCase(); const f=SUBS_POP.find(([x])=>k.includes(x.toLowerCase().split(/[ /+]/)[0])); return f?f[1]:"🔁"; };
+function vSuscripciones(m){
+  const subs=m.gastos.filter(g=>g.cat==="Suscripciones");
+  const alMes=sum(subs,g=>(+g.monto||0)*factor(g.frec,m.mes));
+  const hoy=todayISO();
+  const nombres=new Set(subs.map(g=>(g.nombre||"").toLowerCase()));
+  const pop=SUBS_POP.filter(([n])=>!nombres.has(n.toLowerCase()));
+  const lista = subs.length ? `<div class="suscs">${subs.map(g=>{ const f=proximoCobro(g), d=f?Math.round((iso2t(f)-iso2t(hoy))/86400000):null;
+      return `<button class="susc" data-act="subEditar" data-id="${g.id}"><span class="susc-i" aria-hidden="true">${subIcono(g.nombre)}</span>
+        <span class="susc-t"><b>${esc(g.nombre||"Sin nombre")}</b><small>${f?`Se cobra el ${fechaCorta(f)}${d===0?" · hoy":d===1?" · mañana":d<=7?` · en ${d} días`:""}`:`<span class="warnc">Falta el día de cobro</span>`}</small></span>
+        <span class="susc-v num">${+g.monto?money(g.monto):"<span class='warnc'>sin valor</span>"}<small>${FREQ_TXT(g.frec)}</small></span></button>`; }).join("")}</div>`
+    : `<div class="empty">¿Pagas Netflix, Spotify, el plan del celular o el gimnasio? Agrégalos aquí y te aviso antes de cada cobro.</div>`;
+  return `<section class="panel">
+    <div class="listhead"><h2>Suscripciones ${hb("suscripciones")}</h2>${subs.length?`<span class="total num">${money(alMes)} al mes</span>`:""}</div>
+    ${subs.length?`<p class="hint">Al año son <b>${money(alMes*12)}</b>. Te aviso en Hoy unos días antes de cada cobro, y puedes pasarlas a tu calendario.</p>`:""}
+    ${lista}
+    ${pop.length?`<p class="subtle" style="margin:14px 0 6px">Agregar rápido:</p><div class="suscpop">${pop.map(([n,i])=>`<button class="chip" data-act="subAdd" data-v="${esc(n)}">${i} ${esc(n)}</button>`).join("")}<button class="chip" data-act="subAdd" data-v="">➕ Otra</button></div>`:""}
+    ${subs.some(g=>proximoCobro(g))?`<div style="margin-top:12px"><button class="btn small" data-act="cal">📅 Pasarlas a mi calendario</button></div>`:""}
+  </section>`;
+}
+
 const SIS_OPTS = sel => `<option value="capital" ${sel!=="fija"?"selected":""}>Capital fijo + intereses</option><option value="fija" ${sel==="fija"?"selected":""}>Cuota fija</option>`;
 const ESTADO = {ok:["ok","Al día ✔"],pendiente:["warn","Pendiente"],mora:["bad","En mora"],atrasado:["bad","Atrasado"],futuro:["","Por pagar"],sin:["","Sin pago este mes"]};
 const ESTADO_DEUDA = {uso:["","En uso"],aldia:["ok","Al día (la usaste y pagaste)"],sinuso:["muted","Al día, sin uso"],activo:["","Activo"],pagado:["ok","Pagado ✔"],cerrado:["muted","Cerrado"],noempieza:["muted","Aún no empieza"]};
@@ -994,6 +1127,7 @@ function proximosPagos(m,c){
   const dia = d => `${thisMonth()}-${pad(Math.min(Math.max(1,Math.round(d)),dim))}`;
   S.perfil.tarjetas.forEach((t,i)=>{ const st=c.tc[i]; if(+t.diaPago>0 && st && st.falta>0.5) out.push({fecha:dia(+t.diaPago), txt:`Pagar <b>${esc(t.nombre||"tarjeta")}</b>`, monto:st.falta, tab:"tarjetas"}); });
   S.perfil.creditos.forEach((x,i)=>{ const st=c.cc[i]; if(+x.diaPago>0 && st && st.falta>0.5) out.push({fecha:dia(+x.diaPago), txt:`Cuota de <b>${esc(x.nombre||"crédito")}</b>`, monto:st.falta, tab:"creditos"}); });
+  m.gastos.forEach(g=>{ const f=proximoCobro(g,hoy); if(f && +g.monto>0) out.push({fecha:f, txt:g.cat==="Suscripciones"?`Te cobran <b>${esc(g.nombre||"una suscripción")}</b>`:`Pagar <b>${esc(g.nombre||"gasto")}</b>`, monto:+g.monto, tab:"gastos"}); });
   const list=out.map(o=>({...o,d:Math.round((iso2t(o.fecha)-iso2t(hoy))/86400000)})).filter(o=>o.d<=15).sort((a,b)=>a.d-b.d);
   if(!list.length) return "";
   const when = d => d<0?[`Vencido hace ${-d} día${d===-1?"":"s"}`,"bad"]:d===0?["Hoy","warn"]:d===1?["Mañana","warn"]:[`En ${d} días`,d<=3?"warn":""];
@@ -1086,6 +1220,8 @@ const AYUDA = [
  {id:"compracuotas", t:"Compras a cuotas desde Hoy", h:`<p>Si pagas algo con tarjeta de crédito en Hoy, elige la tarjeta en “Pagado con” y aparece el campo <b>Cuotas</b>.</p><ul><li><b>1 cuota:</b> se descuenta de lo que puedes gastar hoy y se suma a la tarjeta.</li><li><b>2 o más cuotas:</b> no se descuenta hoy completo. Queda como compra en la tarjeta y cada mes se aparta solo la cuota, con sus intereses.</li></ul><p>Si borras el movimiento, también se quita la compra de la tarjeta.</p>`},
  {id:"topes", t:"¿En qué se va tu plata? y topes", h:`<p>En la pestaña <b>Gastos</b>, abajo, ves en qué se va tu plata este mes: gastos fijos por categoría, lo del día a día, los pagos de deudas y el ahorro.</p><p>En <b>Topes del día a día</b> le pones un máximo al mes a una categoría, por ejemplo $300.000 en comida. Cuando llegas al 80% te aviso en Hoy, y si te pasas sale en rojo. Para quitar un tope, borra el valor.</p>`},
  {id:"calendario", t:"Pagos en tu calendario", h:`<p>En Hoy, en <b>Próximos pagos</b>, o en el menú de tu foto, toca <b>📅 A mi calendario</b>.</p><ul><li><b>Descargar todos:</b> baja un archivo con todas tus fechas. En iPhone se abre en Calendario; en Android o computador ábrelo con tu calendario.</li><li><b>Google Calendar:</b> agrega una fecha a la vez.</li></ul><p>Las tarjetas y créditos se repiten cada mes y te avisan el día anterior. Si cambias una fecha en la app, vuelve a agregarla.</p>`},
+ {id:"suscripciones", t:"Suscripciones y fechas de cobro", h:`<p>En <b>Gastos</b> está la sección <b>Suscripciones</b>. Toca Netflix, Spotify, el plan del celular o la que tengas, escribe el valor y el <b>día de cobro</b>.</p><ul><li>Te digo cuánto pagas al mes y al año en suscripciones.</li><li>Unos días antes de cada cobro te aviso en Hoy, en Próximos pagos.</li><li>Con <b>📅 A mi calendario</b> las pasas al calendario del celular, y ese sí te suena aunque no abras la app.</li></ul><p>El día de cobro sirve para cualquier gasto fijo: arriendo, servicios, administración. Si el gasto es cada 2, 3, 6 o 12 meses (SOAT, matrícula), pon la fecha del próximo cobro y lo calculo de ahí en adelante.</p><p>Las suscripciones ya son parte de tus gastos fijos: no se cuentan dos veces.</p>`},
+ {id:"voz", t:"Dímelo y lo anoto", h:`<p>En Hoy, escribe o di lo que gastaste como se lo dirías a un amigo:</p><ul><li>“gasté 15 mil en almuerzo con la Nu”</li><li>“tinto 2.500” · “ayer taxi 18 mil”</li><li>“me pagaron 80 lucas de domicilios”</li><li>“tenis de 250 mil a 6 cuotas con tarjeta”</li></ul><p>Mientras hablas o escribes aparecen fichitas con lo que entendí: el valor, si es gasto, hormiga o ingreso, la categoría y cómo pagaste. Toca una fichita para cambiarla y luego <b>Anotar</b>.</p><p>Entiendo “mil”, “lucas”, “palos”, “millón y medio”, “ayer”, “antier” y el nombre de tus tarjetas. Y aprendo: si anotas “arriendo moto” en Transporte, la próxima vez lo pongo ahí solo.</p><p>El botón de micrófono aparece en los navegadores que lo permiten (Chrome, Edge, Safari). En los demás, toca el 🎤 de tu teclado y dicta en el cuadro: funciona igual. El dictado lo hace tu navegador (en Chrome, con el servicio de voz de Google); entender la frase y anotarla pasa en tu celular.</p>`},
  {id:"clave", t:"Clave de acceso", h:`<p>Es opcional. En el menú de tu foto toca <b>🔒 Clave de acceso</b>, elige si la quieres de 4 o de 6 números y escríbela dos veces.</p><ul><li>Te la pido cada vez que abres la app y si la dejas más de ${MIN_FUERA} minutos sin usar.</li><li>Si te equivocas 5 veces seguidas, toca esperar un momento antes de intentar otra vez.</li><li><b>¿La olvidaste?</b> Tócalo en el teclado, confirma con tu cuenta de Google y creas una nueva. Tus datos no se tocan.</li></ul><p>La clave protege la app si alguien toma tu celular. No se guarda tal cual: solo un código cifrado que nadie puede leer, ni siquiera quien administra la app.</p>`},
  {id:"copia", t:"Copia de seguridad", h:`<p>Tus datos ya están guardados en tu cuenta. La copia es por si borras algo sin querer.</p><ul><li>En el menú de tu foto toca <b>Descargar copia de seguridad</b>. Guarda el archivo en tu Drive, correo o computador.</li><li>Para volver a esa copia toca <b>Restaurar una copia</b> y elige el archivo. Antes de reemplazar te muestro qué tiene.</li></ul><p>La tabla para Excel (CSV) es otra cosa: sirve para ver tus números en Excel, no para restaurar.</p>`},
  {id:"privacidad", t:"Privacidad y tus datos", h:`<p>Entras con tu cuenta de Google y nadie más que use la app puede ver tu información.</p><p>Desde tu foto, arriba a la derecha, puedes <b>descargar una copia</b> o <b>borrar todos tus datos</b>. Si prefieres, puedes usar números aproximados: la app funciona igual.</p><p><button class="btn small" data-act="privacidad">Leer el aviso de privacidad completo</button></p>`},
@@ -1113,7 +1249,7 @@ function renderModal(){
   if(!abierto){ el.innerHTML=""; return; }
   if(S.help){ renderHelpSheet(el); return; }
   const d=S.dlg, titulo={novedades:"✨ Novedades",clave:"Clave de acceso",privAcepta:"Antes de seguir: tu privacidad",privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
-  const cuerpo={novedades:()=>`<div class="nov-list">${filasNovedades()}</div>`,clave:dlgClave,privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
+  const cuerpo={novedades:()=>NOVEDADES_V.slice(0,2).map((v,i)=>`${i?`<p class="subtle" style="margin:16px 0 4px">Antes:</p>`:""}<div class="nov-list">${filasNovedades(v.items)}</div>`).join(""),clave:dlgClave,privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
   el.innerHTML = `<div class="modal"><div class="sheet" role="dialog" aria-modal="true" aria-label="${titulo}">
     <div class="sheet-h"><h2>${titulo}</h2>${d.kind==="privAcepta"?"":`<button class="icon-btn" data-act="helpClose" aria-label="Cerrar">✕</button>`}</div>
     <div class="sheet-b">${cuerpo?cuerpo(d):""}</div></div></div>`;
@@ -1158,7 +1294,7 @@ function flujoCrear(len, o={}){
       if(!primero){ primero=c; return {titulo:"Repite tu clave", sub:"Escríbela otra vez para confirmar", err:false}; }
       if(c!==primero){ primero=null; return {...base, sub:"No coincidían. Empecemos de nuevo.", err:true}; }
       S.perfil.pin=await crearPin(c); savePerfil(); limpiarFallos();
-      setTimeout(()=>{ S.menu=false; renderMenu(); toast(o.listo||"Clave activada 🔒 Te la pido cada vez que abras la app."); },260);
+      setTimeout(()=>{ S.menu=false; renderMenu(); render(); toast(o.listo||"Clave activada 🔒 Te la pido cada vez que abras la app."); },260);
       return true; },
     alCancelar: ()=>{ if(o.alCancelar) o.alCancelar(); } });
 }
@@ -1254,11 +1390,13 @@ function eventosCalendario(){
   (S.perfil.prestamos||[]).forEach(p=>{ const e=prestamoEstado(p,hoy); if(e.estado==="pagado") return; let acum=0;
     e.cal.forEach(q=>{ acum+=q.valor; if(acum-e.pagado<=0.5 || q.fecha<hoy) return;
       ev.push({id:`p${p.id}-${q.n}`,titulo:`${p.dir==="debo"?"Pagarle a":"Cobrarle a"} ${p.persona||"alguien"}`,fecha:q.fecha,desc:`${money(q.valor)}${q.de>1?` · cuota ${q.n} de ${q.de}`:""}${p.motivo?` · ${p.motivo}`:""}`,monto:q.valor}); }); });
+  (S.months[thisMonth()]||{gastos:[]}).gastos.forEach(g=>{ const f=proximoCobro(g,hoy); if(!f) return; const n=MESES_FREC[g.frec]||1;
+    ev.push({id:"g"+g.id,titulo:g.cat==="Suscripciones"?`Cobro de ${g.nombre||"suscripción"}`:`Pagar ${g.nombre||"gasto"}`,fecha:f,dia:+f.slice(8,10),repite:true,intervalo:n,desc:`${money(+g.monto||0)} ${FREQ_TXT(g.frec)}.`,monto:+g.monto||0}); });
   return ev.sort((a,b)=>a.fecha.localeCompare(b.fecha));
 }
 const ymd = f => f.replace(/-/g,"");
 const diaSig = f => { const t=iso2t(f)+86400000; return new Date(t).toISOString().slice(0,10); };
-const rrule = e => e.repite ? `RRULE:FREQ=MONTHLY;${e.dia>=29?"BYMONTHDAY=-1":`BYMONTHDAY=${e.dia}`}${e.veces?`;COUNT=${e.veces}`:""}` : "";
+const rrule = e => e.repite ? `RRULE:FREQ=MONTHLY;${e.intervalo>1?`INTERVAL=${e.intervalo};`:""}${e.dia>=29?"BYMONTHDAY=-1":`BYMONTHDAY=${e.dia}`}${e.veces?`;COUNT=${e.veces}`:""}` : "";
 function linkGoogle(e){
   const q=new URLSearchParams({action:"TEMPLATE",text:e.titulo,dates:`${ymd(e.fecha)}/${ymd(diaSig(e.fecha))}`,details:e.desc+"\n\nAgregado desde Pecuniae Ratio."});
   if(e.repite) q.set("recur",rrule(e));
@@ -1278,7 +1416,7 @@ function icsTexto(evs){
 function dlgCalendario(){
   const evs=eventosCalendario();
   if(!evs.length) return `<p class="hint">Aún no hay fechas para agregar. Escribe el <b>día de pago</b> en tus tarjetas y créditos, o la <b>fecha de pago</b> en tus préstamos, y vuelve aquí.</p>`;
-  const cuando = e => e.repite ? `cada mes el día ${e.dia>=29?"último del mes":e.dia}${e.veces?` · ${e.veces} vez${e.veces===1?"":"es"}`:""}` : fechaCorta(e.fecha);
+  const cuando = e => e.repite && e.intervalo===12 ? `cada año, el ${fechaCorta(e.fecha)}` : e.repite ? `${e.intervalo>1?`cada ${e.intervalo} meses,`:"cada mes"} el día ${e.dia>=29?"último del mes":e.dia}${e.veces?` · ${e.veces} vez${e.veces===1?"":"es"}`:""}` : fechaCorta(e.fecha);
   return `<p class="hint">Así tu celular te avisa el día anterior, aunque no abras la app. Las tarjetas y los créditos quedan como pagos <b>que se repiten cada mes</b>.</p>
     <button class="btn primary big" data-act="calTodo" style="width:100%">📅 Descargar todos (${evs.length})</button>
     <p class="subtle" style="margin:8px 0 14px">En iPhone, abre el archivo descargado y toca “Agregar todo”. En Android o computador, ábrelo con tu calendario, o usa los botones de Google Calendar de abajo, uno por uno.</p>
@@ -1506,25 +1644,56 @@ function marcarPaso(n){
 }
 // ---------- Novedades: se muestran una vez por versión ----------
 // Para anunciar mejoras nuevas: cambia NOVEDADES_ID y la lista. Quien ya usaba la app las ve una vez en Hoy.
-const NOVEDADES_ID = "2026-11-clave";
-const NOVEDADES = [
-  {i:"🔒", t:"Ponle clave a tu app", d:"De 4 o 6 números, con teclado como el del iPhone.", a:"clave", b:"Activar"},
-  {i:"🧭", t:"La guía ahora es más fácil", d:"Toca cualquier paso para volver a él, y sigue donde ibas con el botón 🧭 Guía.", a:"gAbrir", b:"Abrir guía"},
-  {i:"💳", t:"Compras a cuotas desde Hoy", d:"Al pagar con tarjeta, escribe en cuántas cuotas y se reparte sola mes a mes.", a:"help", v:"compracuotas", b:"Ver cómo"},
-  {i:"📊", t:"¿En qué se va tu plata?", d:"Gráfica por categoría y topes del día a día que te avisan al 80%.", a:"goTab", v:"gastos", b:"Ver"},
-  {i:"📅", t:"Tus pagos en el calendario", d:"Agrega fechas de tarjetas, créditos y préstamos para que el celular te avise.", a:"cal", b:"Agregar"},
-  {i:"💾", t:"Copia de seguridad", d:"Descarga todos tus datos y restáuralos si algo se borra.", a:"help", v:"copia", b:"Ver cómo"}
+// La más nueva va primero. Quien ya vio una versión, solo ve las que vinieron después.
+const NOVEDADES_V = [
+  {id:"2026-11-voz", items:[
+    {i:"🎙️", t:"Dímelo y lo anoto", d:"Escribe o di “almuerzo 15 mil con la Nu” y la app entiende el valor, la categoría y cómo pagaste.", k:"voz", a:"vozFoco", b:"Probar"},
+    {i:"🔁", t:"Suscripciones", d:"Netflix, Spotify, el plan del celular… cuánto pagas al año y aviso antes de cada cobro.", k:"subs", a:"subVer", b:"Ver"},
+    {i:"🗓️", t:"Día de cobro en tus gastos fijos", d:"Arriendo, servicios o SOAT: ponles fecha y te aviso en Próximos pagos y en tu calendario.", a:"help", k:"dia", v:"suscripciones", b:"Ver cómo"}]},
+  {id:"2026-11-clave", items:[
+    {i:"🔒", t:"Ponle clave a tu app", d:"De 4 o 6 números, con teclado como el del iPhone.", k:"clave", a:"clave", b:"Activar"},
+    {i:"🧭", t:"La guía ahora es más fácil", d:"Toca cualquier paso para volver a él, y sigue donde ibas con el botón 🧭 Guía.", k:"guia", a:"gAbrir", b:"Abrir guía"},
+    {i:"💳", t:"Compras a cuotas desde Hoy", d:"Al pagar con tarjeta, escribe en cuántas cuotas y se reparte sola mes a mes.", a:"help", k:"cuotas", v:"compracuotas", b:"Ver cómo"},
+    {i:"📊", t:"¿En qué se va tu plata?", d:"Gráfica por categoría y topes del día a día que te avisan al 80%.", k:"topes", a:"goTab", v:"gastos", b:"Ver"},
+    {i:"📅", t:"Tus pagos en el calendario", d:"Agrega fechas de tarjetas, créditos y préstamos para que el celular te avise.", k:"cal", a:"cal", b:"Agregar"},
+    {i:"💾", t:"Copia de seguridad", d:"Descarga todos tus datos y restáuralos si algo se borra.", a:"help", k:"copia", v:"copia", b:"Ver cómo"}]}
 ];
+const NOVEDADES_ID = NOVEDADES_V[0].id;
+function novedadesSinVer(){
+  const visto = S.perfil && S.perfil.novedades, ix = NOVEDADES_V.findIndex(v=>v.id===visto);
+  return (ix<0 ? NOVEDADES_V : NOVEDADES_V.slice(0,ix)).slice(0,2).flatMap(v=>v.items);
+}
 const novedadesPendientes = () => !!S.perfil && S.perfil.novedades!==NOVEDADES_ID && !S.guia;
-const filasNovedades = () => NOVEDADES.map((n,i)=>`<div class="nov-it" style="--d:${i*60}ms"><span class="nov-i" aria-hidden="true">${n.i}</span>
-  <span class="nov-tx"><b>${n.t}</b><small>${n.d}</small></span>
-  <button class="btn small" data-act="${n.a}"${n.v?` data-v="${n.v}"`:""}>${n.b}</button></div>`).join("");
+// ¿Ya usó esta novedad? Se marca sola como hecha
+function novHecha(k){
+  const p=S.perfil||{}, meses=Object.values(S.months), act=S.months[thisMonth()]||{gastos:[]};
+  switch(k){
+    case "clave": return !!p.pin;
+    case "guia": return !!(p.guia && p.guia.hecho);
+    case "cuotas": return meses.some(mm=>(mm.movs||[]).some(x=>+x.cuotas>1));
+    case "topes": return Object.keys(p.topes||{}).length>0;
+    case "cal": return !!p.calUsado;
+    case "copia": return !!p.ultimaCopia;
+    case "voz": return !!p.vozUsada;
+    case "subs": return act.gastos.some(g=>g.cat==="Suscripciones" && +g.monto>0);
+    case "dia": return act.gastos.some(g=>+g.dia>0 || g.proximo);
+  }
+  return false;
+}
+const ordenNov = lista => [...lista.filter(n=>!novHecha(n.k)), ...lista.filter(n=>novHecha(n.k))];
+const filasNovedades = (lista=NOVEDADES_V[0].items) => ordenNov(lista).map((n,i)=>{ const h=novHecha(n.k);
+  return `<div class="nov-it ${h?"hecha":""}" style="--d:${i*60}ms"><span class="nov-i" aria-hidden="true">${h?"✓":n.i}</span>
+  <span class="nov-tx"><b>${n.t}</b><small>${h?"¡Listo! Ya lo usaste.":n.d}</small></span>
+  ${h?`<span class="nov-ok">Hecho</span>`:`<button class="btn small" data-act="${n.a}"${n.v?` data-v="${n.v}"`:""}>${n.b}</button>`}</div>`; }).join("");
 function novedadesCard(){
   if(!novedadesPendientes()) return "";
+  const lista=novedadesSinVer(), hechas=lista.filter(n=>novHecha(n.k)).length;
+  if(lista.length && hechas===lista.length){ S.perfil.novedades=NOVEDADES_ID; savePerfil(); setTimeout(()=>toast("¡Probaste todas las novedades! 🎉"),300); return ""; }
   return `<section class="panel nov" aria-label="Novedades">
     <div class="nov-h"><span class="nov-badge">✨ Novedades</span><button class="icon-btn" data-act="novOk" aria-label="Cerrar novedades">✕</button></div>
     <h2 class="nov-t">Pecuniae Ratio tiene cosas nuevas</h2>
-    <div class="nov-list">${filasNovedades()}</div>
+    ${hechas?`<div class="nov-prog"><div class="bar"><span style="width:${(hechas/lista.length*100).toFixed(0)}%"></span></div><small>${hechas} de ${lista.length} probadas</small></div>`:""}
+    <div class="nov-list">${filasNovedades(novedadesSinVer())}</div>
     <button class="btn primary" data-act="novOk" style="width:100%;margin-top:12px">Entendido</button>
   </section>`;
 }
@@ -1611,6 +1780,23 @@ async function accionesNuevas(act,b,e,m){
     case "fold": S.open.delete(b.dataset.id); render(); confirmSaved(b.dataset.l||"Guardado"); return true;
     case "help": S.menu=false; renderMenu(); S.dlg=null; S.help=b.dataset.v||"inicio"; renderModal(); return true;
     case "helpClose": S.help=null; S.dlg=null; renderModal(); return true;
+    case "subAdd": { const m=S.months[S.cur]; const id=uid(); m.gastos.push({id,nombre:b.dataset.v||"",monto:0,frec:"mensual",cat:"Suscripciones",tipo:"fijo",medio:"efectivo",dia:""});
+      S.open.add("g:"+id); save(); render(); setTimeout(()=>{ const el=document.querySelector(`[data-fold="g:${id}"]`); if(el){ el.scrollIntoView({behavior:"smooth",block:"center"}); const i=el.querySelector(b.dataset.v?'[data-b$="|monto|money"]':'[data-b$="|nombre|text"]'); if(i){ i.focus({preventScroll:true}); if(i.select) i.select(); } } },60); return true; }
+    case "subEditar": { const id=b.dataset.id; S.open.add("g:"+id); render(); setTimeout(()=>{ const el=document.querySelector(`[data-fold="g:${id}"]`); if(el) el.scrollIntoView({behavior:"smooth",block:"center"}); },60); return true; }
+    case "vozFoco": S.dlg=null; renderModal(); S.tab="hoy"; render(); setTimeout(()=>{ const i=$("#vozTxt"); if(i){ i.scrollIntoView({behavior:"smooth",block:"center"}); i.focus({preventScroll:true}); } },60); return true;
+    case "subVer": S.dlg=null; renderModal(); S.tab="gastos"; render(); setTimeout(()=>{ const h=[...document.querySelectorAll("#app h2")].find(x=>x.textContent.startsWith("Suscripciones")); if(h) h.scrollIntoView({behavior:"smooth",block:"start"}); },60); return true;
+    case "vozMic": vozEscuchar(); return true;
+    case "vozTipo": { const v=vozEstado(), r=vozInterpretar(), ord=["gasto","hormiga","ingreso"]; v.over.tipo=ord[(ord.indexOf(r.tipo)+1)%3]; delete v.over.cat; v.abierto=""; vozPintar(); return true; }
+    case "vozCat": { const v=vozEstado(); v.abierto = v.abierto==="cat"?"":"cat"; vozPintar(); return true; }
+    case "vozCatSel": { const v=vozEstado(); v.over.cat=b.dataset.v; v.abierto=""; vozPintar(); return true; }
+    case "vozMedio": { const v=vozEstado(); v.abierto = v.abierto==="medio"?"":"medio"; vozPintar(); return true; }
+    case "vozMedioSel": { const v=vozEstado(); v.over.medio=b.dataset.v; v.abierto=""; vozPintar(); return true; }
+    case "vozBorrar": { if(rec&&S.voz&&S.voz.escuchando) rec.stop(); S.voz={texto:"",over:{},prev:{},abierto:""}; const i=$("#vozTxt"); if(i){ i.value=""; i.focus(); } vozPintar(); return true; }
+    case "vozOk": { const r=vozInterpretar(); if(!r.monto) return true; const m=S.months[thisMonth()]; if(!m) return true;
+      const fecha = r.fecha && r.fecha.slice(0,7)===thisMonth() ? r.fecha : todayISO();
+      S.voz={texto:"",over:{},prev:{},abierto:""};
+      if(!S.perfil.vozUsada){ S.perfil.vozUsada=todayISO(); savePerfil(); }
+      registrarMov(m,{fecha,tipo:r.tipo,monto:r.monto,desc:r.desc,cat:r.cat,medio:r.medio,cuotas:r.cuotas}); return true; }
     case "novOk": S.perfil.novedades=NOVEDADES_ID; savePerfil(); { const el=$(".nov"); if(el){ el.classList.add("nov-sale"); setTimeout(render,230); } else render(); } toast("Puedes volver a verlas en el menú de tu foto, en ✨ Novedades."); return true;
     case "novVer": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"novedades"}; renderModal(); return true;
     case "clave": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"clave"}; renderModal(); return true;
@@ -1621,7 +1807,7 @@ async function accionesNuevas(act,b,e,m){
     case "privNo": flushAll(); S.dlg=null; S.menu=false; await signOut(auth); return true;
     case "privacidad": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"privacidad"}; renderModal(); return true;
     case "cal": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"calendario"}; renderModal(); return true;
-    case "calTodo": { const evs=eventosCalendario(); if(!evs.length) return true; descargarArchivo("pagos-pecuniae-ratio.ics", icsTexto(evs), "text/calendar;charset=utf-8"); toast(`Descargaste ${evs.length} fecha${evs.length===1?"":"s"}. Ábrelo para agregarlas a tu calendario.`); return true; }
+    case "calTodo": { const evs=eventosCalendario(); if(!evs.length) return true; if(!S.perfil.calUsado){ S.perfil.calUsado=todayISO(); savePerfil(); } descargarArchivo("pagos-pecuniae-ratio.ics", icsTexto(evs), "text/calendar;charset=utf-8"); toast(`Descargaste ${evs.length} fecha${evs.length===1?"":"s"}. Ábrelo para agregarlas a tu calendario.`); return true; }
     case "copiaDescargar": S.menu=false; renderMenu(); descargarCopia(); return true;
     case "copiaElegir": { const f=$("#copiaFile"); if(f){ f.value=""; f.click(); } return true; }
     case "copiaRestaurar": if(S.dlg && S.dlg.kind==="restaurar") await restaurarCopia(); return true;
@@ -1702,6 +1888,7 @@ function exportCSV(){
   setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }
 
+document.addEventListener("click",e=>{ if(S.perfil && !S.perfil.calUsado && e.target.closest && e.target.closest('a[href*="calendar.google.com"]')){ S.perfil.calUsado=todayISO(); savePerfil(); } },true);
 document.addEventListener("click",async e=>{
   if(e.target.classList && e.target.classList.contains("modal")){ S.help=null; S.dlg=null; renderModal(); return; }
   if(!S.user){ if(e.target.closest('[data-act="helpClose"]')){ S.dlg=null; renderModal(); } return; }
@@ -1732,16 +1919,8 @@ document.addEventListener("click",async e=>{
     const medio = ($("#"+f+"-medio")||{}).value || "efectivo";
     const tarj = medio!=="efectivo" ? S.perfil.tarjetas.find(x=>x.id===medio) : null;
     const cw=$("#"+f+"-cuotasWrap"), cuotas = tipo==="gasto" && tarj && cw && !cw.hidden ? Math.max(1,Math.min(120,Math.round(parseNum($("#"+f+"-cuotas").value)||1))) : 1;
-    const desc=$("#"+f+"-desc").value.trim(), mov={id:uid(),fecha,tipo,monto,desc,cat:$("#"+f+"-cat").value,medio};
-    const antes = alertasTopes(m).map(a=>a.cat+a.nivel).join();
-    if(cuotas>1){ const cid=uid(); tarj.compras.push({id:cid,fecha,desc:desc||mov.cat,valor:monto,cuotas,primerCobro:"",movId:mov.id}); mov.cuotas=cuotas; mov.compraId=cid; savePerfil(); }
-    m.movs.push(mov);
     if(f==="hq"){ S.hcat=""; S.hval=0; }
-    save(); render();
-    const nueva = alertasTopes(m).find(a=>!antes.includes(a.cat+a.nivel) && (a.cat===(tipo==="hormiga"?"Gastos hormiga":(CAT_MOV.includes(mov.cat)?mov.cat:"Otros"))));
-    if(nueva) toast(nueva.nivel==="bad" ? `Anotado. Ojo: te pasaste del tope de ${nueva.cat} (${money(nueva.v)} de ${money(nueva.t)}).` : `Anotado. Llevas el ${Math.round(nueva.v/nueva.t*100)}% de tu tope de ${nueva.cat}.`);
-    else if(cuotas>1) toast(`Compra de ${money(monto)} a ${cuotas} cuotas en la tarjeta ${tarj.nombre||""}. Cada mes se aparta la cuota.`);
-    else toast(`Anotaste ${money(monto)}${tipo==="hormiga"?" en gastos hormiga":""}.`);
+    registrarMov(m,{fecha,tipo,monto,desc:$("#"+f+"-desc").value.trim(),cat:$("#"+f+"-cat").value,medio,cuotas});
     const nf=$("#"+f+"-monto"); if(nf) nf.focus();
     return;
   }
@@ -1851,6 +2030,8 @@ function flushRender(){
   if(key){ const el=document.querySelector(key); if(el){ if(val!==null && el.value!==val && !(el.dataset.b && el.dataset.b.includes("|money"))) el.value=val; el.focus(); try{ const l=el.value.length; el.setSelectionRange(l,l); }catch(e){} } }
 }
 // Si la app estuvo más de unos minutos en segundo plano, vuelve a pedir la clave
+document.addEventListener("input",e=>{ if(e.target.id==="vozTxt"){ const v=vozEstado(); if(!e.target.value.trim()) v.over={}; v.texto=e.target.value; v.abierto=""; vozPintar(); } });
+document.addEventListener("keydown",e=>{ if(e.target.id==="vozTxt" && e.key==="Enter"){ e.preventDefault(); const ok=$('[data-act="vozOk"]'); if(ok && !ok.disabled) ok.click(); } });
 let ocultoEn=0;
 document.addEventListener("visibilitychange",()=>{
   if(document.hidden){ ocultoEn=Date.now(); return; }
