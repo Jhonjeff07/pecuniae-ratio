@@ -1,7 +1,7 @@
 // Guarda la app en el teléfono para que abra aunque no haya internet.
 // Si cambias algún archivo de la app, sube este número (v2, v3…) para que todos reciban la versión nueva.
-const VERSION = "presupuesto-v11";
-const SHELL = ["./","index.html","app.js","engine.js","ahorros.js","prestamos.js","firebase-config.js","manifest.webmanifest","icons/icon-192.png","icons/icon-512.png","icons/logo.svg","favicon.ico","icons/favicon-32.png"];
+const VERSION = "presupuesto-v12";
+const SHELL = ["./","index.html","app.js","engine.js","ahorros.js","prestamos.js","clave.js","firebase-config.js","manifest.webmanifest","icons/icon-192.png","icons/icon-512.png","icons/logo.svg","favicon.ico","icons/favicon-32.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

@@ -1,8 +1,9 @@
 import { firebaseConfig } from "./firebase-config.js";
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, reauthenticateWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, getDocs, getDoc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { ahorroEn, proyectarAhorro, metaEstado, TIPOS_AHORRO, TIPOS_META, toDate, addMonths } from "./ahorros.js";
+import { abrirTeclado, cerrarTeclado, crearPin, pinCorrecto, tecladoAbierto, limpiarFallos, mensajeTeclado } from "./clave.js";
 import { prestamoEstado, venceEnMes, iso2t } from "./prestamos.js";
 import { mIdx, idxKey, daysIn, FREQ, factor, tasaMes, cardState, creditState, consejos, ordenPago, CLASES_ROTATIVAS, TIPOS_CUOTAS, cuotaNeta, tasaDesdeCuota } from "./engine.js";
 
@@ -25,6 +26,8 @@ const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto"
 const monthName = k => { const [y,m]=k.split("-").map(Number); return MESES[m-1]+" "+y; };
 const monthShort = k => { const [y,m]=k.split("-").map(Number); return MESES[m-1].slice(0,3)+" "+String(y).slice(2); };
 const nextMonth = k => { let [y,m]=k.split("-").map(Number); m++; if(m>12){m=1;y++;} return y+"-"+pad(m); };
+const LOGO = "icons/logo.svg";
+const MIN_FUERA = 5;   // minutos en segundo plano antes de volver a pedir la clave
 const sum = (a,f) => a.reduce((s,x)=>s+(f?f(x):x),0);
 
 const CAT_GASTO = ["Vivienda","Servicios","Mercado","Transporte","Educación","Salud","Personal","Ocio","Hogar","Familia","Otros"];
@@ -55,7 +58,7 @@ function normalize(m){
   return m;
 }
 // Tarjetas, créditos y pagos viven en un documento aparte, porque duran varios meses.
-function blankPerfil(){ return { v:5, inicio: thisMonth(), tarjetas:[], creditos:[], pagos:[], ahorros:[], metas:[], prestamos:[], guia:null, topes:{}, privacidad:null }; }
+function blankPerfil(){ return { v:5, inicio: thisMonth(), tarjetas:[], creditos:[], pagos:[], ahorros:[], metas:[], prestamos:[], guia:null, topes:{}, privacidad:null, pin:null }; }
 function normalizePerfil(p){
   const mig = p.ahorros==null;
   const b=blankPerfil(); for(const k of Object.keys(b)) if(p[k]==null) p[k]=b[k];
@@ -135,21 +138,25 @@ if(!configured){
   </div></div>`;
 }else{
   onAuthStateChanged(auth, async user=>{
-    S.user = user;
+    S.user = user; cerrarTeclado(true);
     if(!user){ renderLogin(); return; }
-    $("#root").innerHTML = LOADER.replace(">Cargando<",">Abriendo tus cuentas<");
+    // Si la hormiga ya está caminando, solo cambia el texto (así la animación no se reinicia)
+    const lt=$(".loader .ltxt");
+    if(lt && lt.firstChild) lt.firstChild.nodeValue="Abriendo tus cuentas";
+    else $("#root").innerHTML = LOADER.replace(">Cargando<",">Abriendo tus cuentas<");
     try{ await loadMonths(); }
     catch(e){ console.error(e); $("#root").innerHTML = `<div class="screen"><div class="login"><h1>No se pudieron cargar tus datos</h1><p>Revisa tu conexión y recarga la página. Si eres quien publicó la app, revisa que las reglas de Firestore estén publicadas (Paso 3 de la guía).</p><button class="btn" onclick="location.reload()">Recargar</button></div></div>`; return; }
     if(!Object.keys(S.months).length){ const k=thisMonth(); S.months[k]=blankMonth(k); save(k); }
     if(!S.perfil){ S.perfil=blankPerfil(); const ks0=Object.keys(S.months).sort(); S.perfil.inicio=ks0[0];
       // Cuenta nueva: aceptó el aviso al entrar con Google en la pantalla de inicio
-      if(sinDatos()) S.perfil.privacidad={acepto:true,fecha:todayISO(),version:1,como:"registro"};
+      if(sinDatos()){ S.perfil.privacidad={acepto:true,fecha:todayISO(),version:1,como:"registro"}; S.perfil.novedades=NOVEDADES_ID; }
       savePerfil(); }
     if(!S.months[thisMonth()] && Object.keys(S.months).sort().pop() < thisMonth()){ newMonth(true); }
     const ks = Object.keys(S.months).sort();
     S.cur = S.months[thisMonth()] ? thisMonth() : ks[ks.length-1];
     try{ const t=localStorage.getItem("pd:tab"); if(t) S.tab=t; }catch(e){}
     if(!S.perfil.guia && sinDatos()){ S.guia={paso:0,form:null,done:false,tmp:{}}; }
+    if(S.perfil.pin) pedirClave();
     renderShell(); render();
     if(S.migrado){ savePerfil(); S.migrado=false; }
     if(S.autoMes){ toast(`Empezó ${monthName(S.autoMes)}: copié tus ingresos y gastos fijos del mes anterior.`); S.autoMes=null; }
@@ -293,7 +300,7 @@ function render(){
   document.querySelectorAll("#tabs button").forEach(b=>b.setAttribute("aria-selected", String(b.dataset.tab===S.tab)));
   const m = M(), c = calc(m);
   const views = {hoy:vHoy, ingresos:vIngresos, gastos:vGastos, tarjetas:vTarjetas, creditos:vCreditos, prestamos:vPrestamos, ahorros:vAhorros, metas:vMetas, hormiga:vHormiga, historial:vHistorial};
-  $("#app").innerHTML = (S.tab==="hoy" ? guiaBanner() : "") + (views[S.tab]||vHoy)(m,c);
+  $("#app").innerHTML = (S.tab==="hoy" ? novedadesCard() + guiaBanner() : "") + (views[S.tab]||vHoy)(m,c);
   renderMenu(); renderModal();
 }
 function renderMonthSel(){
@@ -310,7 +317,9 @@ function renderMenu(){
     ${S.perfil.ultimaCopia?"":`<p class="subtle" style="margin:0 0 6px">Consejo: descarga de vez en cuando una copia de seguridad.</p>`}
     ${S.installEvt?`<button class="btn" data-act="install">Instalar la app</button>`:""}
     ${ios?`<p class="subtle" style="margin:0 0 4px">Para instalarla en iPhone: toca Compartir y luego “Agregar a inicio”.</p>`:""}
+    <button class="btn" data-act="novVer">✨ Novedades</button>
     <button class="btn" data-act="cal">📅 Pagos a mi calendario</button>
+    <button class="btn" data-act="clave">🔒 Clave de acceso${S.perfil.pin?` <small class="subtle">· activada</small>`:""}</button>
     <div class="msep">Tus datos</div>
     <button class="btn" data-act="copiaDescargar">Descargar copia de seguridad</button>
     <button class="btn" data-act="copiaElegir">Restaurar una copia</button>
@@ -1077,6 +1086,7 @@ const AYUDA = [
  {id:"compracuotas", t:"Compras a cuotas desde Hoy", h:`<p>Si pagas algo con tarjeta de crédito en Hoy, elige la tarjeta en “Pagado con” y aparece el campo <b>Cuotas</b>.</p><ul><li><b>1 cuota:</b> se descuenta de lo que puedes gastar hoy y se suma a la tarjeta.</li><li><b>2 o más cuotas:</b> no se descuenta hoy completo. Queda como compra en la tarjeta y cada mes se aparta solo la cuota, con sus intereses.</li></ul><p>Si borras el movimiento, también se quita la compra de la tarjeta.</p>`},
  {id:"topes", t:"¿En qué se va tu plata? y topes", h:`<p>En la pestaña <b>Gastos</b>, abajo, ves en qué se va tu plata este mes: gastos fijos por categoría, lo del día a día, los pagos de deudas y el ahorro.</p><p>En <b>Topes del día a día</b> le pones un máximo al mes a una categoría, por ejemplo $300.000 en comida. Cuando llegas al 80% te aviso en Hoy, y si te pasas sale en rojo. Para quitar un tope, borra el valor.</p>`},
  {id:"calendario", t:"Pagos en tu calendario", h:`<p>En Hoy, en <b>Próximos pagos</b>, o en el menú de tu foto, toca <b>📅 A mi calendario</b>.</p><ul><li><b>Descargar todos:</b> baja un archivo con todas tus fechas. En iPhone se abre en Calendario; en Android o computador ábrelo con tu calendario.</li><li><b>Google Calendar:</b> agrega una fecha a la vez.</li></ul><p>Las tarjetas y créditos se repiten cada mes y te avisan el día anterior. Si cambias una fecha en la app, vuelve a agregarla.</p>`},
+ {id:"clave", t:"Clave de acceso", h:`<p>Es opcional. En el menú de tu foto toca <b>🔒 Clave de acceso</b>, elige si la quieres de 4 o de 6 números y escríbela dos veces.</p><ul><li>Te la pido cada vez que abres la app y si la dejas más de ${MIN_FUERA} minutos sin usar.</li><li>Si te equivocas 5 veces seguidas, toca esperar un momento antes de intentar otra vez.</li><li><b>¿La olvidaste?</b> Tócalo en el teclado, confirma con tu cuenta de Google y creas una nueva. Tus datos no se tocan.</li></ul><p>La clave protege la app si alguien toma tu celular. No se guarda tal cual: solo un código cifrado que nadie puede leer, ni siquiera quien administra la app.</p>`},
  {id:"copia", t:"Copia de seguridad", h:`<p>Tus datos ya están guardados en tu cuenta. La copia es por si borras algo sin querer.</p><ul><li>En el menú de tu foto toca <b>Descargar copia de seguridad</b>. Guarda el archivo en tu Drive, correo o computador.</li><li>Para volver a esa copia toca <b>Restaurar una copia</b> y elige el archivo. Antes de reemplazar te muestro qué tiene.</li></ul><p>La tabla para Excel (CSV) es otra cosa: sirve para ver tus números en Excel, no para restaurar.</p>`},
  {id:"privacidad", t:"Privacidad y tus datos", h:`<p>Entras con tu cuenta de Google y nadie más que use la app puede ver tu información.</p><p>Desde tu foto, arriba a la derecha, puedes <b>descargar una copia</b> o <b>borrar todos tus datos</b>. Si prefieres, puedes usar números aproximados: la app funciona igual.</p><p><button class="btn small" data-act="privacidad">Leer el aviso de privacidad completo</button></p>`},
 ];
@@ -1102,8 +1112,8 @@ function renderModal(){
   document.body.classList.toggle("modal-open", abierto);
   if(!abierto){ el.innerHTML=""; return; }
   if(S.help){ renderHelpSheet(el); return; }
-  const d=S.dlg, titulo={privAcepta:"Antes de seguir: tu privacidad",privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
-  const cuerpo={privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
+  const d=S.dlg, titulo={novedades:"✨ Novedades",clave:"Clave de acceso",privAcepta:"Antes de seguir: tu privacidad",privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
+  const cuerpo={novedades:()=>`<div class="nov-list">${filasNovedades()}</div>`,clave:dlgClave,privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
   el.innerHTML = `<div class="modal"><div class="sheet" role="dialog" aria-modal="true" aria-label="${titulo}">
     <div class="sheet-h"><h2>${titulo}</h2>${d.kind==="privAcepta"?"":`<button class="icon-btn" data-act="helpClose" aria-label="Cerrar">✕</button>`}</div>
     <div class="sheet-b">${cuerpo?cuerpo(d):""}</div></div></div>`;
@@ -1119,6 +1129,58 @@ const PRIVACIDAD_HTML = `<div class="hq-b">
   <p><b>Si dejas de usarla.</b> Tus datos quedan guardados hasta que los borres.</p>
   <p class="subtle">Al entrar con Google aceptas este aviso.</p>
 </div>`;
+
+// ---------- Clave de acceso ----------
+function pedirClave(){
+  const nombre=((S.user&&S.user.displayName)||"").split(" ")[0];
+  abrirTeclado({ titulo:"Ingresa tu clave", sub:nombre?`Hola, ${esc(nombre)}`:"", len:S.perfil.pin.len, logo:LOGO, olvide:true, contarFallos:true,
+    alCompletar: async c => (await pinCorrecto(c,S.perfil.pin)) ? true : false,
+    alOlvidar: olvideClave });
+}
+function olvideClave(){
+  mensajeTeclado("Confirma con tu cuenta de Google…");
+  // Se llama directo desde el toque, para que el navegador no bloquee la ventana de Google
+  reauthenticateWithPopup(auth.currentUser||S.user, new GoogleAuthProvider()).then(()=>{
+    limpiarFallos();
+    flujoCrear(S.perfil.pin?S.perfil.pin.len:4, {obligatorio:true, titulo:"Crea tu nueva clave", listo:"Listo, tu clave nueva quedó activada 🔒"});
+  }).catch(e=>{
+    const cod=(e&&e.code)||"";
+    mensajeTeclado(cod.includes("mismatch") ? "Esa no es la cuenta con la que entraste. Usa la misma." :
+      cod.includes("popup-blocked") ? "Tu navegador bloqueó la ventana de Google. Permite ventanas emergentes e intenta de nuevo." :
+      "No se confirmó tu cuenta. Toca “¿La olvidaste?” para intentar de nuevo.", true);
+  });
+}
+function flujoCrear(len, o={}){
+  let primero=null;
+  const base={ titulo:o.titulo||"Crea tu clave", sub:`Elige ${len} números que recuerdes` };
+  abrirTeclado({ ...base, len, logo:LOGO, cancelable:!o.obligatorio,
+    alCompletar: async c => {
+      if(!primero){ primero=c; return {titulo:"Repite tu clave", sub:"Escríbela otra vez para confirmar", err:false}; }
+      if(c!==primero){ primero=null; return {...base, sub:"No coincidían. Empecemos de nuevo.", err:true}; }
+      S.perfil.pin=await crearPin(c); savePerfil(); limpiarFallos();
+      setTimeout(()=>{ S.menu=false; renderMenu(); toast(o.listo||"Clave activada 🔒 Te la pido cada vez que abras la app."); },260);
+      return true; },
+    alCancelar: ()=>{ if(o.alCancelar) o.alCancelar(); } });
+}
+function verificarYLuego(titulo, luego){
+  abrirTeclado({ titulo, sub:"", len:S.perfil.pin.len, logo:LOGO, cancelable:true, olvide:true, contarFallos:true,
+    alCompletar: async c => { if(!(await pinCorrecto(c,S.perfil.pin))) return false; setTimeout(luego,230); return true; },
+    alOlvidar: olvideClave });
+}
+function dlgClave(d){
+  const p=S.perfil.pin;
+  const elegir = `<div class="lenpick">
+      <button class="lenopt" data-act="claveLen" data-v="4"><span class="ldots"><i></i><i></i><i></i><i></i></span><b>4 números</b><small>Rápida</small></button>
+      <button class="lenopt" data-act="claveLen" data-v="6"><span class="ldots"><i></i><i></i><i></i><i></i><i></i><i></i></span><b>6 números</b><small>Más segura</small></button></div>`;
+  if(!p || d.cambiando) return `<p>${d.cambiando?"¿De cuántos números quieres tu clave nueva?":"Ponle una clave a la app, como la del celular. Te la pido cada vez que la abras y si la dejas más de "+MIN_FUERA+" minutos sin usar."}</p>
+    ${elegir}
+    <p class="subtle" style="margin-top:12px">Es opcional. Si la olvidas, la cambias confirmando con tu cuenta de Google y tus datos quedan intactos. La clave no se guarda: solo un código cifrado que nadie puede leer.</p>`;
+  return `<div class="clave-on"><span class="cicon">🔒</span><div><b>Tu clave está activada</b><br><span class="subtle">${p.len} números${p.fecha?` · desde el ${fechaCorta(p.fecha)}`:""}</span></div></div>
+    <p class="subtle">Te la pido cada vez que abres la app y si la dejas más de ${MIN_FUERA} minutos sin usar.</p>
+    <div class="gbtns" style="margin:12px 0 0;flex-direction:column;align-items:stretch">
+      <button class="btn" data-act="claveCambiar">Cambiar clave</button>
+      <button class="btn ghost" data-act="claveQuitar" style="color:var(--bad)">Quitar clave</button></div>`;
+}
 
 function dlgPrivAcepta(){
   return `<p>Pecuniae Ratio estrenó su <b>aviso de privacidad</b>. Como entraste antes de que existiera, te lo muestro una sola vez. En resumen:</p>
@@ -1175,7 +1237,7 @@ async function restaurarCopia(){
   const c=S.dlg.copia, meses=S.dlg.meses;
   for(const k of Object.keys(S.months)){ if(!meses.includes(k)){ clearTimeout(pending.get(k)); pending.delete(k); try{ await deleteDoc(monthDoc(k)); }catch(e){ console.error(e); } } }
   S.months={}; for(const k of meses){ const mm=JSON.parse(JSON.stringify(c.meses[k])); mm.mes=k; S.months[k]=normalize(mm); save(k); }
-  const priv=S.perfil.privacidad; S.perfil=normalizePerfil(JSON.parse(JSON.stringify(c.perfil))); if(!S.perfil.privacidad) S.perfil.privacidad=priv; if(!S.perfil.inicio) S.perfil.inicio=meses.sort()[0]; savePerfil();
+  const priv=S.perfil.privacidad, pinActual=S.perfil.pin||null; S.perfil=normalizePerfil(JSON.parse(JSON.stringify(c.perfil))); if(!S.perfil.privacidad) S.perfil.privacidad=priv; S.perfil.pin=pinActual; if(!S.perfil.inicio) S.perfil.inicio=meses.sort()[0]; savePerfil();
   if(!S.months[thisMonth()] && meses.sort().slice(-1)[0] < thisMonth()) newMonth(true);
   S.autoMes=null; S.cur = S.months[thisMonth()] ? thisMonth() : Object.keys(S.months).sort().pop();
   S.dlg=null; S.open=new Set(); S.guia=null; S.tab="hoy"; renderModal(); render(); confirmSaved("Copia restaurada");
@@ -1442,6 +1504,31 @@ function marcarPaso(n){
   if(g && !g.descartada && g.paso===n) return;
   S.perfil.guia={hecho:false,paso:n}; savePerfil();
 }
+// ---------- Novedades: se muestran una vez por versión ----------
+// Para anunciar mejoras nuevas: cambia NOVEDADES_ID y la lista. Quien ya usaba la app las ve una vez en Hoy.
+const NOVEDADES_ID = "2026-11-clave";
+const NOVEDADES = [
+  {i:"🔒", t:"Ponle clave a tu app", d:"De 4 o 6 números, con teclado como el del iPhone.", a:"clave", b:"Activar"},
+  {i:"🧭", t:"La guía ahora es más fácil", d:"Toca cualquier paso para volver a él, y sigue donde ibas con el botón 🧭 Guía.", a:"gAbrir", b:"Abrir guía"},
+  {i:"💳", t:"Compras a cuotas desde Hoy", d:"Al pagar con tarjeta, escribe en cuántas cuotas y se reparte sola mes a mes.", a:"help", v:"compracuotas", b:"Ver cómo"},
+  {i:"📊", t:"¿En qué se va tu plata?", d:"Gráfica por categoría y topes del día a día que te avisan al 80%.", a:"goTab", v:"gastos", b:"Ver"},
+  {i:"📅", t:"Tus pagos en el calendario", d:"Agrega fechas de tarjetas, créditos y préstamos para que el celular te avise.", a:"cal", b:"Agregar"},
+  {i:"💾", t:"Copia de seguridad", d:"Descarga todos tus datos y restáuralos si algo se borra.", a:"help", v:"copia", b:"Ver cómo"}
+];
+const novedadesPendientes = () => !!S.perfil && S.perfil.novedades!==NOVEDADES_ID && !S.guia;
+const filasNovedades = () => NOVEDADES.map((n,i)=>`<div class="nov-it" style="--d:${i*60}ms"><span class="nov-i" aria-hidden="true">${n.i}</span>
+  <span class="nov-tx"><b>${n.t}</b><small>${n.d}</small></span>
+  <button class="btn small" data-act="${n.a}"${n.v?` data-v="${n.v}"`:""}>${n.b}</button></div>`).join("");
+function novedadesCard(){
+  if(!novedadesPendientes()) return "";
+  return `<section class="panel nov" aria-label="Novedades">
+    <div class="nov-h"><span class="nov-badge">✨ Novedades</span><button class="icon-btn" data-act="novOk" aria-label="Cerrar novedades">✕</button></div>
+    <h2 class="nov-t">Pecuniae Ratio tiene cosas nuevas</h2>
+    <div class="nov-list">${filasNovedades()}</div>
+    <button class="btn primary" data-act="novOk" style="width:100%;margin-top:12px">Entendido</button>
+  </section>`;
+}
+
 function guiaBanner(){
   if(!S.perfil.guia) return `<section class="panel gbanner">${bub("¿Primera vez por aquí? Te puedo guiar paso a paso para armar tu presupuesto en unos minutos.")}
     <div class="gbtns"><button class="btn primary" data-act="gStart">Sí, guíame</button><button class="btn" data-act="gNo">No, gracias</button></div></section>`;
@@ -1524,6 +1611,12 @@ async function accionesNuevas(act,b,e,m){
     case "fold": S.open.delete(b.dataset.id); render(); confirmSaved(b.dataset.l||"Guardado"); return true;
     case "help": S.menu=false; renderMenu(); S.dlg=null; S.help=b.dataset.v||"inicio"; renderModal(); return true;
     case "helpClose": S.help=null; S.dlg=null; renderModal(); return true;
+    case "novOk": S.perfil.novedades=NOVEDADES_ID; savePerfil(); { const el=$(".nov"); if(el){ el.classList.add("nov-sale"); setTimeout(render,230); } else render(); } toast("Puedes volver a verlas en el menú de tu foto, en ✨ Novedades."); return true;
+    case "novVer": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"novedades"}; renderModal(); return true;
+    case "clave": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"clave"}; renderModal(); return true;
+    case "claveLen": { const n=+b.dataset.v===6?6:4; S.dlg=null; renderModal(); flujoCrear(n,{alCancelar:()=>{ S.dlg={kind:"clave"}; renderModal(); }}); return true; }
+    case "claveCambiar": S.dlg=null; renderModal(); verificarYLuego("Ingresa tu clave actual", ()=>{ S.dlg={kind:"clave",cambiando:true}; renderModal(); }); return true;
+    case "claveQuitar": S.dlg=null; renderModal(); verificarYLuego("Ingresa tu clave para quitarla", ()=>{ S.perfil.pin=null; savePerfil(); renderMenu(); toast("Quitaste la clave. La app abre sin pedirla."); }); return true;
     case "privAcepto": S.perfil.privacidad={acepto:true,fecha:todayISO(),version:1,como:"aviso"}; savePerfil(); S.dlg=null; renderModal(); toast("Gracias. Puedes leer el aviso cuando quieras desde el menú de tu foto."); return true;
     case "privNo": flushAll(); S.dlg=null; S.menu=false; await signOut(auth); return true;
     case "privacidad": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"privacidad"}; renderModal(); return true;
@@ -1533,7 +1626,7 @@ async function accionesNuevas(act,b,e,m){
     case "copiaElegir": { const f=$("#copiaFile"); if(f){ f.value=""; f.click(); } return true; }
     case "copiaRestaurar": if(S.dlg && S.dlg.kind==="restaurar") await restaurarCopia(); return true;
     case "gStart": S.help=null; S.menu=false; S.guia={paso:0,form:null,done:false,tmp:{}}; render(); window.scrollTo({top:0}); return true;
-    case "gAbrir": { if(S.guia) return true; S.help=null; S.menu=false; renderMenu();
+    case "gAbrir": { if(S.guia) return true; S.help=null; S.dlg=null; renderModal(); S.menu=false; renderMenu();
       const n = pasoGuardado() || (S.perfil.guia && S.perfil.guia.hecho ? 1 : 0);
       const g2={paso:n,form:n?autoForm(PASOS[n]):null,done:false,tmp:{}}; if(g2.form) g2.tmp=gDefaults(g2.form); S.guia=g2; S.tab="hoy"; render(); window.scrollTo({top:0}); return true; }
     case "gSeguir": { S.help=null; S.menu=false; const n=pasoGuardado()||1; const g2={paso:n,form:autoForm(PASOS[n]),done:false,tmp:{}}; if(g2.form) g2.tmp=gDefaults(g2.form); S.guia=g2; S.tab="hoy"; render(); window.scrollTo({top:0}); return true; }
@@ -1618,7 +1711,7 @@ document.addEventListener("click",async e=>{
   const b = e.target.closest("[data-act]"); if(!b) return;
   const act=b.dataset.act, m=M();
   if(act==="menu"){ S.menu=!S.menu; S.confirmAll=false; renderMenu(); return; }
-  if(act==="logout"){ flushAll(); S.menu=false; await signOut(auth); return; }
+  if(act==="logout"){ flushAll(); S.menu=false; cerrarTeclado(true); await signOut(auth); return; }
   if(act==="install"){ if(S.installEvt){ S.installEvt.prompt(); S.installEvt=null; S.menu=false; renderMenu(); } return; }
   if(act==="delAll"){
     if(!S.confirmAll){ S.confirmAll=true; renderMenu(); return; }
@@ -1628,7 +1721,7 @@ document.addEventListener("click",async e=>{
   if(await accionesNuevas(act,b,e,m)) return;
   if(act==="movTipo"){ S.movTipo=b.dataset.v; render(); return; }
   if(act==="hchip"){ const v=b.dataset.v; S.hcat = S.hcat===v ? "" : v; S.hval = S.hcat ? ultimoValor(v) : 0; render(); const i=$("#hq-monto"); if(i){ i.focus(); try{ i.select(); }catch(_){} } return; }
-  if(act==="goTab"){ S.tab=b.dataset.v; try{localStorage.setItem("pd:tab",S.tab);}catch(_){} render(); window.scrollTo({top:0}); return; }
+  if(act==="goTab"){ if(S.dlg){ S.dlg=null; renderModal(); } S.tab=b.dataset.v; try{localStorage.setItem("pd:tab",S.tab);}catch(_){} render(); window.scrollTo({top:0}); return; }
   if(act==="chip"){ const f=b.dataset.f; $("#"+f+"-desc").value=b.dataset.v; const sel=$("#"+f+"-cat"); if([...sel.options].some(o=>o.value===b.dataset.v)) sel.value=b.dataset.v; $("#"+f+"-monto").focus(); return; }
   if(act==="addMov"){
     const f=b.dataset.f, form=document.querySelector(`[data-form="${f}"]`), tipo=form.dataset.tipo;
@@ -1757,6 +1850,12 @@ function flushRender(){
   render();
   if(key){ const el=document.querySelector(key); if(el){ if(val!==null && el.value!==val && !(el.dataset.b && el.dataset.b.includes("|money"))) el.value=val; el.focus(); try{ const l=el.value.length; el.setSelectionRange(l,l); }catch(e){} } }
 }
+// Si la app estuvo más de unos minutos en segundo plano, vuelve a pedir la clave
+let ocultoEn=0;
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden){ ocultoEn=Date.now(); return; }
+  if(S.user && S.perfil && S.perfil.pin && !tecladoAbierto() && ocultoEn && Date.now()-ocultoEn > MIN_FUERA*60000){ S.menu=false; renderMenu(); pedirClave(); }
+});
 document.addEventListener("keydown",e=>{
   if(e.key==="Escape" && (S.help||S.dlg)){ S.help=null; S.dlg=null; renderModal(); return; }
   if(e.key==="Enter" && e.target.id && e.target.id.startsWith("g-") && e.target.type!=="checkbox"){ const bt=document.querySelector('[data-act="gSave"]'); if(bt){ e.preventDefault(); bt.click(); } return; }

@@ -363,6 +363,74 @@ textarea{font:inherit;color:inherit;width:100%;background:var(--surface2);border
 @keyframes brillo{0%,60%,100%{opacity:0}75%{opacity:.9}}
 @keyframes punto{0%,100%{opacity:.2}40%{opacity:1}}
 @media (prefers-reduced-motion:reduce){.loader *{animation:none!important}}
+
+/* v12: clave de acceso, teclado de vidrio estilo iPhone */
+body.lock-open{overflow:hidden}
+.lock{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;color:#fff;
+  background:#0E1A3D;transition:opacity .25s ease, transform .25s ease;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+.lock.entra{opacity:0;transform:scale(1.04)} .lock.sale{opacity:0;transform:scale(1.03)}
+.lock-bg{position:absolute;inset:0;overflow:hidden;background:radial-gradient(120% 90% at 50% 0%,#2B4FB8 0%,#16275E 55%,#0B1430 100%)}
+.lock-bg i{position:absolute;border-radius:50%;filter:blur(60px);opacity:.55;animation:flota 14s ease-in-out infinite alternate}
+.lock-bg i:nth-child(1){width:320px;height:320px;background:#4F7BFF;top:-80px;left:-90px}
+.lock-bg i:nth-child(2){width:260px;height:260px;background:#F2B33D;bottom:-60px;right:-70px;opacity:.35;animation-duration:18s}
+.lock-bg i:nth-child(3){width:220px;height:220px;background:#7A5CFF;top:40%;left:55%;opacity:.35;animation-duration:22s}
+@keyframes flota{from{transform:translate(0,0) scale(1)}to{transform:translate(40px,30px) scale(1.15)}}
+.lock-in{position:relative;display:flex;flex-direction:column;align-items:center;width:100%;max-width:340px;padding:24px 18px}
+.lock-in.paso{animation:pasoIn .28s ease}
+@keyframes pasoIn{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}
+.lock-logo{width:58px;height:58px;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.35);margin-bottom:14px}
+.lock-t{margin:0;font-size:1.25rem;font-weight:600;letter-spacing:.01em;text-align:center}
+.lock-s{margin:6px 0 0;min-height:1.3em;font-size:.9rem;color:rgba(255,255,255,.75);text-align:center;transition:color .2s}
+.lock-s.err{color:#FFB4B4}
+.pdots{display:flex;gap:18px;margin:22px 0 34px;height:16px}
+.pdots span{width:14px;height:14px;border-radius:50%;border:1.6px solid rgba(255,255,255,.9);transition:background .15s, transform .15s}
+.pdots span.on{background:#fff;animation:pop .18s ease}
+@keyframes pop{50%{transform:scale(1.3)}}
+.pdots.tiembla{animation:tiembla .4s cubic-bezier(.36,.07,.19,.97)}
+@keyframes tiembla{10%,90%{transform:translateX(-2px)}20%,80%{transform:translateX(5px)}30%,50%,70%{transform:translateX(-10px)}40%,60%{transform:translateX(10px)}}
+.lock.ok .pdots span{background:#7CE3A6;border-color:#7CE3A6;transition:background .15s}
+.pgrid{display:grid;grid-template-columns:repeat(3,78px);gap:16px 26px;justify-content:center}
+.pk{width:78px;height:78px;border-radius:50%;border:1px solid rgba(255,255,255,.22);color:#fff;cursor:pointer;
+  background:rgba(255,255,255,.13);backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;font:inherit;padding:0;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.18);transition:background .35s ease, transform .1s ease}
+.pk .pkn{font-size:2rem;font-weight:300;line-height:1}
+.pk .pkl{font-size:.58rem;font-weight:600;letter-spacing:.18em;opacity:.8;margin-top:2px;line-height:1}
+.pk:active,.pk.toca{background:rgba(255,255,255,.45);transition:background 0s}
+.pk.toca{animation:suelta .35s ease forwards}
+@keyframes suelta{from{background:rgba(255,255,255,.45)}to{background:rgba(255,255,255,.13)}}
+.pk.txt{background:none;border:0;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;font-size:.85rem;font-weight:500;color:rgba(255,255,255,.9);line-height:1.15}
+.pk.txt.toca,.pk.txt:active{background:none;animation:none;opacity:.6}
+.pk:focus-visible{outline:2px solid #fff;outline-offset:3px}
+.lock.espera .pk:not(.txt){opacity:.35;pointer-events:none}
+@media (max-height:640px){ .pk{width:66px;height:66px} .pgrid{grid-template-columns:repeat(3,66px);gap:12px 22px} .pdots{margin:16px 0 22px} .lock-logo{width:46px;height:46px;margin-bottom:8px} }
+@media (prefers-reduced-motion:reduce){ .lock-bg i,.lock-in.paso,.pdots.tiembla{animation:none!important} }
+/* elegir largo de la clave */
+.lenpick{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+.lenopt{display:flex;flex-direction:column;align-items:center;gap:6px;padding:18px 10px;border-radius:16px;cursor:pointer;font:inherit;color:var(--ink);
+  background:linear-gradient(160deg,var(--surface2),var(--surface));border:1px solid var(--line);transition:transform .12s, border-color .2s, box-shadow .2s}
+.lenopt:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(35,64,142,.18)} .lenopt:active{transform:scale(.97)}
+.lenopt small{color:var(--muted)}
+.ldots{display:flex;gap:6px;margin-bottom:4px} .ldots i{width:10px;height:10px;border-radius:50%;background:var(--brand)}
+.clave-on{display:flex;gap:12px;align-items:center;padding:14px;border-radius:14px;background:var(--ok-soft);margin-bottom:10px}
+.clave-on .cicon{font-size:1.6rem}
+
+/* v12: novedades */
+.nov{position:relative;overflow:hidden;border:1px solid color-mix(in srgb,var(--brand) 35%,var(--line));
+  background:linear-gradient(150deg,color-mix(in srgb,var(--brand) 12%,var(--surface)) 0%,var(--surface) 55%);animation:novIn .35s ease}
+.nov.nov-sale{animation:novOut .23s ease forwards}
+@keyframes novIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+@keyframes novOut{to{opacity:0;transform:translateY(-8px) scale(.98)}}
+.nov-h{display:flex;justify-content:space-between;align-items:center}
+.nov-badge{font-size:.75rem;font-weight:700;letter-spacing:.04em;color:var(--brand);background:color-mix(in srgb,var(--brand) 14%,transparent);padding:4px 10px;border-radius:999px}
+.nov-t{margin:10px 0 6px;font-size:1.1rem}
+.nov-list{display:grid;gap:2px}
+.nov-it{display:grid;grid-template-columns:36px 1fr auto;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line);animation:novIn .35s ease both;animation-delay:var(--d,0ms)}
+.nov-it:first-child{border-top:0}
+.nov-i{font-size:1.4rem;width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:var(--surface2)}
+.nov-tx{display:flex;flex-direction:column;gap:2px;min-width:0} .nov-tx small{color:var(--muted);font-size:.8rem;line-height:1.3}
+.nov-it .btn{white-space:nowrap}
+@media (prefers-reduced-motion:reduce){.nov,.nov-it{animation:none}}
 </style>
 </head>
 <body>
