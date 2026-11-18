@@ -25,6 +25,7 @@ const pad = n => String(n).padStart(2,"0");
 const todayISO = () => { const d=new Date(); return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); };
 const thisMonth = () => todayISO().slice(0,7);
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+const mesCorto = k => { const [y,m]=k.split("-").map(Number); const t=MESES[m-1]; return t.charAt(0).toUpperCase()+t.slice(1,3)+" "+String(y).slice(2); };
 const monthName = k => { const [y,m]=k.split("-").map(Number); return MESES[m-1]+" "+y; };
 const monthShort = k => { const [y,m]=k.split("-").map(Number); return MESES[m-1].slice(0,3)+" "+String(y).slice(2); };
 const nextMonth = k => { let [y,m]=k.split("-").map(Number); m++; if(m>12){m=1;y++;} return y+"-"+pad(m); };
@@ -86,11 +87,31 @@ const ctx = () => ({ months:S.months, pagos:S.perfil.pagos, start:mIdx(S.perfil.
 
 // ---------- Guardado en Firebase ----------
 const pending = new Map(); const chains = {};
+// La bolita de la foto: titila en amarillo mientras guarda, verde y quieta cuando todo está guardado
+let estadoTxt = "Todo guardado en tu cuenta";
 function setStatus(t){
-  const el=$("#status"); if(!el) return;
   const ok = t==="Guardado"||t==="Conectado", saving = t.startsWith("Guardando"), bad = /No se pudo|límite/.test(t);
-  el.textContent = ok ? "✓ Todo guardado en tu cuenta" : (saving ? "Guardando…" : t);
-  el.className = "status " + (ok?"st-ok":saving?"st-saving":bad?"st-bad":"st-warn");
+  estadoTxt = ok ? "Todo guardado en tu cuenta" : (saving ? "Guardando…" : t);
+  const el=$("#status"); if(!el) return;
+  const antes = el.className;
+  el.className = "sdot " + (ok?"st-ok":saving?"st-saving":bad?"st-bad":"st-warn") + (ok && antes.includes("st-saving") ? " listo" : "");
+  el.setAttribute("aria-label", estadoTxt); el.title = estadoTxt;
+  const sr=$("#statusTxt"); if(sr && !saving) sr.textContent = estadoTxt;
+  const ml=$("#menuEstado"); if(ml) ml.innerHTML = estadoLinea();
+}
+function estadoLinea(){ const el=$("#status"), c=el?el.className:"st-ok"; return `<span class="sdot ${c.replace(/^sdot\s*/,"").replace(" listo","")}" aria-hidden="true"></span> ${esc(estadoTxt)}`; }
+// Tema claro / oscuro
+const temaActual = () => document.documentElement.dataset.theme || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+const ICON_SOL = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><g stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></g></svg>`;
+const ICON_LUNA = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a.6.6 0 0 0-.8-.7A9.5 9.5 0 1 0 21.2 15.4a.6.6 0 0 0-.7-.8Z"/></svg>`;
+const temaBtn = () => { const osc=temaActual()==="dark"; return `<button class="avatar temabtn" data-act="tema" aria-label="${osc?"Cambiar a modo claro":"Cambiar a modo oscuro"}" title="${osc?"Modo claro":"Modo oscuro"}">${osc?ICON_SOL:ICON_LUNA}</button>`; };
+function cambiarTema(){
+  const nuevo = temaActual()==="dark" ? "light" : "dark";
+  document.documentElement.classList.add("tema-anim");
+  document.documentElement.dataset.theme = nuevo;
+  try{ localStorage.setItem("pr:tema", nuevo); }catch(_){}
+  const b=$(".temabtn"); if(b) b.outerHTML = temaBtn();
+  setTimeout(()=>document.documentElement.classList.remove("tema-anim"), 400);
 }
 // Guarda ya y confirma con un mensaje cuando la nube responde
 function confirmSaved(msg, extra=""){
@@ -201,15 +222,16 @@ function renderShell(){
   <div id="offline" class="offline" ${navigator.onLine?"hidden":""}>Sin internet. Puedes seguir anotando; se sincroniza al volver la conexión.</div>
   <header class="top">
     <div class="top-in">
-      <h1><img class="hlogo" src="icons/logo.svg" alt="">Pecuniae Ratio</h1>
+      <h1><img class="hlogo" src="icons/logo.svg" alt=""><span class="htxt">Pecuniae Ratio</span></h1>
       <div class="monthpick">
         <select id="monthSel" aria-label="Mes"></select>
-        <button class="btn small" data-act="newMonth">Nuevo mes</button>
+        <button class="btn small nuevomes" data-act="newMonth" aria-label="Nuevo mes" title="Nuevo mes"><span aria-hidden="true">+</span></button>
       </div>
-      <button class="btn small guiabtn" data-act="gAbrir">🧭 Guía</button>
+      <button class="btn small guiabtn" data-act="gAbrir" aria-label="Guía" title="Guía paso a paso">🧭<span class="gtxt"> Guía</span></button>
       <button class="avatar helpbtn" data-act="help" aria-label="Ayuda">?</button>
-      <button class="avatar" data-act="menu" aria-label="Tu cuenta">${u.photoURL?`<img src="${esc(u.photoURL)}" alt="" referrerpolicy="no-referrer">`:esc(ini)}</button>
-      <span class="status" id="status" style="flex-basis:100%"></span>
+      ${temaBtn()}
+      <span class="avwrap"><button class="avatar" data-act="menu" aria-label="Tu cuenta">${u.photoURL?`<img src="${esc(u.photoURL)}" alt="" referrerpolicy="no-referrer">`:esc(ini)}</button><button class="sdot st-ok" id="status" data-act="estado" aria-label="Todo guardado en tu cuenta" title="Todo guardado en tu cuenta"></button></span>
+      <span class="sr-only" id="statusTxt" aria-live="polite"></span>
       <div id="menu"></div>
     </div>
     <nav class="tabs" role="tablist" id="tabs">
@@ -307,7 +329,7 @@ function render(){
 }
 function renderMonthSel(){
   const ks = Object.keys(S.months).sort().reverse();
-  $("#monthSel").innerHTML = ks.map(k=>`<option value="${k}" ${k===S.cur?"selected":""}>${monthName(k)}</option>`).join("");
+  $("#monthSel").innerHTML = ks.map(k=>`<option value="${k}" ${k===S.cur?"selected":""} aria-label="${monthName(k)}">${mesCorto(k)}</option>`).join("");
 }
 function renderMenu(){
   const el=$("#menu"); if(!el) return;
@@ -316,6 +338,7 @@ function renderMenu(){
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.navigator.standalone;
   el.innerHTML = `<div class="menu" role="menu">
     <div class="who">${esc(u.displayName||"Tu cuenta")}</div><div class="mail">${esc(u.email||"")}</div>
+    <div class="m-estado" id="menuEstado">${estadoLinea()}</div>
     ${S.perfil.ultimaCopia?"":`<p class="subtle" style="margin:0 0 6px">Consejo: descarga de vez en cuando una copia de seguridad.</p>`}
     ${S.installEvt?`<button class="btn" data-act="install">Instalar la app</button>`:""}
     ${ios?`<p class="subtle" style="margin:0 0 4px">Para instalarla en iPhone: toca Compartir y luego “Agregar a inicio”.</p>`:""}
@@ -1227,6 +1250,7 @@ const AYUDA = [
  {id:"compracuotas", t:"Compras a cuotas desde Hoy", h:`<p>Si pagas algo con tarjeta de crédito en Hoy, elige la tarjeta en “Pagado con” y aparece el campo <b>Cuotas</b>.</p><ul><li><b>1 cuota:</b> se descuenta de lo que puedes gastar hoy y se suma a la tarjeta.</li><li><b>2 o más cuotas:</b> no se descuenta hoy completo. Queda como compra en la tarjeta y cada mes se aparta solo la cuota, con sus intereses.</li></ul><p>Si borras el movimiento, también se quita la compra de la tarjeta.</p>`},
  {id:"topes", t:"¿En qué se va tu plata? y topes", h:`<p>En la pestaña <b>Gastos</b>, abajo, ves en qué se va tu plata este mes: gastos fijos por categoría, lo del día a día, los pagos de deudas y el ahorro.</p><p>En <b>Topes del día a día</b> le pones un máximo al mes a una categoría, por ejemplo $300.000 en comida. Cuando llegas al 80% te aviso en Hoy, y si te pasas sale en rojo. Para quitar un tope, borra el valor.</p>`},
  {id:"calendario", t:"Pagos en tu calendario", h:`<p>En Hoy, en <b>Próximos pagos</b>, o en el menú de tu foto, toca <b>📅 A mi calendario</b>.</p><ul><li><b>Descargar todos:</b> baja un archivo con todas tus fechas. En iPhone se abre en Calendario; en Android o computador ábrelo con tu calendario.</li><li><b>Google Calendar:</b> agrega una fecha a la vez.</li></ul><p>Las tarjetas y créditos se repiten cada mes y te avisan el día anterior. Si cambias una fecha en la app, vuelve a agregarla.</p>`},
+ {id:"bolita", t:"La bolita verde y el modo oscuro", h:`<p>En tu foto, arriba a la derecha, hay una bolita que te dice cómo va el guardado:</p><ul><li><b>🟡 Titila en amarillo:</b> estoy guardando lo que acabas de escribir.</li><li><b>🟢 Verde y quieta:</b> todo quedó guardado en tu cuenta.</li><li><b>⚪ Gris:</b> no hay internet. Lo guardo en tu celular y lo subo cuando vuelva la conexión.</li><li><b>🔴 Roja:</b> algo falló. Tócala para ver qué pasó.</li></ul><p>Tócala cuando quieras y te digo cómo va. En el menú de tu foto también sale el estado.</p><p>El botón <b>🌙 / ☀️</b> de arriba cambia entre modo claro y oscuro. La app recuerda tu elección en este dispositivo.</p>`},
  {id:"instalar", t:"Tener la app como ícono", h:`<p>Puedes tener Pecuniae Ratio en tu pantalla de inicio, con el ícono de la hormiga, y abrirla a pantalla completa como cualquier app. No ocupa casi espacio y no hay que descargarla de ninguna tienda.</p><p>Toca <b>📲 Instalar en mi celular</b> en el menú de tu foto: te muestro el paso a paso de tu navegador (Chrome, Samsung, Brave, Firefox, Edge, Opera, Xiaomi o iPhone). En algunos se instala con un solo toque.</p><p>Tus datos son los mismos: entras con tu cuenta de Google.</p>`},
  {id:"suscripciones", t:"Suscripciones y fechas de cobro", h:`<p>En <b>Gastos</b> está la sección <b>Suscripciones</b>. Toca Netflix, Spotify, el plan del celular o la que tengas, escribe el valor y el <b>día de cobro</b>.</p><ul><li>Te digo cuánto pagas al mes y al año en suscripciones.</li><li>Unos días antes de cada cobro te aviso en Hoy, en Próximos pagos.</li><li>Con <b>📅 A mi calendario</b> las pasas al calendario del celular, y ese sí te suena aunque no abras la app.</li></ul><p>El día de cobro sirve para cualquier gasto fijo: arriendo, servicios, administración. Si el gasto es cada 2, 3, 6 o 12 meses (SOAT, matrícula), pon la fecha del próximo cobro y lo calculo de ahí en adelante.</p><p>Las suscripciones ya son parte de tus gastos fijos: no se cuentan dos veces.</p>`},
  {id:"voz", t:"Dímelo y lo anoto", h:`<p>En Hoy, escribe o di lo que gastaste como se lo dirías a un amigo:</p><ul><li>“gasté 15 mil en almuerzo con la Nu”</li><li>“tinto 2.500” · “ayer taxi 18 mil”</li><li>“me pagaron 80 lucas de domicilios”</li><li>“tenis de 250 mil a 6 cuotas con tarjeta”</li></ul><p>Mientras hablas o escribes aparecen fichitas con lo que entendí: el valor, si es gasto, hormiga o ingreso, la categoría y cómo pagaste. Toca una fichita para cambiarla y luego <b>Anotar</b>.</p><p>Entiendo “mil”, “lucas”, “palos”, “millón y medio”, “ayer”, “antier” y el nombre de tus tarjetas. Y aprendo: si anotas “arriendo moto” en Transporte, la próxima vez lo pongo ahí solo.</p><p>El botón de micrófono aparece en los navegadores que lo permiten (Chrome, Edge, Safari). En los demás, toca el 🎤 de tu teclado y dicta en el cuadro: funciona igual. El dictado lo hace tu navegador (en Chrome, con el servicio de voz de Google); entender la frase y anotarla pasa en tu celular.</p>`},
@@ -1257,7 +1281,7 @@ function renderModal(){
   if(!abierto){ el.innerHTML=""; return; }
   if(S.help){ renderHelpSheet(el); return; }
   const d=S.dlg, titulo={instalar:"📲 Instalar en mi celular",novedades:"✨ Novedades",clave:"Clave de acceso",privAcepta:"Antes de seguir: tu privacidad",privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
-  const cuerpo={instalar:dlgInstalar,novedades:()=>NOVEDADES_V.slice(0,2).map((v,i)=>`${i?`<p class="subtle" style="margin:16px 0 4px">Antes:</p>`:""}<div class="nov-list">${filasNovedades(v.items)}</div>`).join(""),clave:dlgClave,privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
+  const cuerpo={instalar:dlgInstalar,novedades:()=>NOVEDADES_V.slice(0,3).map((v,i)=>`${i?`<p class="subtle" style="margin:16px 0 4px">Antes:</p>`:""}<div class="nov-list">${filasNovedades(v.items)}</div>`).join(""),clave:dlgClave,privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
   el.innerHTML = `<div class="modal"><div class="sheet" role="dialog" aria-modal="true" aria-label="${titulo}">
     <div class="sheet-h"><h2>${titulo}</h2>${d.kind==="privAcepta"?"":`<button class="icon-btn" data-act="helpClose" aria-label="Cerrar">✕</button>`}</div>
     <div class="sheet-b">${cuerpo?cuerpo(d):""}</div></div></div>`;
@@ -1533,6 +1557,7 @@ function vGuia(){
   if(paso==="hola"){
     body = bub(`¡Hola${n?", "+n:""}! 👋 Soy tu guía de <b>Pecuniae Ratio</b>.`)
       + bub(`Te voy a hacer unas preguntas cortas para armar tu presupuesto: lo que te entra, lo que pagas, lo que debes y lo que ahorras. Toma unos 5 minutos y <b>todo se guarda solo</b> a medida que avanzas.`)
+      + bub(`Arriba, en tu foto, hay una <b>bolita</b>: si titila en amarillo, estoy guardando; si está <b>verde y quieta</b>, todo quedó guardado en tu cuenta.`)
       + bub(`¿Cómo estás? ¿Listo para empezar?`)
       + `<div class="gbtns"><button class="btn primary big" data-act="gNext">¡Sí, empecemos!</button><button class="btn" data-act="gExit">Ahora no, lo hago después</button></div>`;
   } else if(paso==="ingresos"){
@@ -1683,6 +1708,10 @@ function marcarPaso(n){
 // Para anunciar mejoras nuevas: cambia NOVEDADES_ID y la lista. Quien ya usaba la app las ve una vez en Hoy.
 // La más nueva va primero. Quien ya vio una versión, solo ve las que vinieron después.
 const NOVEDADES_V = [
+  {id:"2026-11-tema", items:[
+    {k:"bolita", i:"🟢", t:"La bolita de guardado", d:"En tu foto, arriba: titila en amarillo mientras guardo y queda verde y quieta cuando todo está guardado. Tócala y te digo cómo va.", a:"estado", b:"Ver"},
+    {k:"tema", i:"🌙", t:"Modo claro u oscuro", d:"Cámbialo cuando quieras con el botón 🌙 / ☀️ de arriba.", a:"tema", b:"Cambiar"},
+    {k:"instalar", i:"📲", t:"La app como ícono en tu celular", d:"Te muestro el paso a paso de tu navegador para tenerla con la hormiga en tu pantalla de inicio.", a:"instalar", b:"Ver cómo"}]},
   {id:"2026-11-voz", items:[
     {i:"🎙️", t:"Dímelo y lo anoto", d:"Escribe o di “almuerzo 15 mil con la Nu” y la app entiende el valor, la categoría y cómo pagaste.", k:"voz", a:"vozFoco", b:"Probar"},
     {i:"🔁", t:"Suscripciones", d:"Netflix, Spotify, el plan del celular… cuánto pagas al año y aviso antes de cada cobro.", k:"subs", a:"subVer", b:"Ver"},
@@ -1698,7 +1727,7 @@ const NOVEDADES_V = [
 const NOVEDADES_ID = NOVEDADES_V[0].id;
 function novedadesSinVer(){
   const visto = S.perfil && S.perfil.novedades, ix = NOVEDADES_V.findIndex(v=>v.id===visto);
-  return (ix<0 ? NOVEDADES_V : NOVEDADES_V.slice(0,ix)).slice(0,2).flatMap(v=>v.items);
+  return (ix<0 ? NOVEDADES_V : NOVEDADES_V.slice(0,ix)).slice(0,4).flatMap(v=>v.items);
 }
 const novedadesPendientes = () => !!S.perfil && S.perfil.novedades!==NOVEDADES_ID && !S.guia;
 // ¿Ya usó esta novedad? Se marca sola como hecha
@@ -1714,11 +1743,14 @@ function novHecha(k){
     case "voz": return !!p.vozUsada;
     case "subs": return act.gastos.some(g=>g.cat==="Suscripciones" && +g.monto>0);
     case "dia": return act.gastos.some(g=>+g.dia>0 || g.proximo);
+    case "tema": try{ return !!localStorage.getItem("pr:temaUsado"); }catch(_){ return false; }
+    case "bolita": try{ return !!localStorage.getItem("pr:bolita"); }catch(_){ return false; }
+    case "instalar": return yaLaInstalo() || !esCelular();
   }
   return false;
 }
-const ordenNov = lista => [...lista.filter(n=>!novHecha(n.k)), ...lista.filter(n=>novHecha(n.k))];
-const filasNovedades = (lista=NOVEDADES_V[0].items) => ordenNov(lista).map((n,i)=>{ const h=novHecha(n.k);
+const ordenNov = lista => { const r=[...lista.filter(n=>!novHecha(n.k)), ...lista.filter(n=>novHecha(n.k))]; r._ord=true; return r; };
+const filasNovedades = (lista=NOVEDADES_V[0].items) => (lista._ord?lista:ordenNov(lista)).map((n,i)=>{ const h=novHecha(n.k);
   return `<div class="nov-it ${h?"hecha":""}" style="--d:${i*60}ms"><span class="nov-i" aria-hidden="true">${h?"✓":n.i}</span>
   <span class="nov-tx"><b>${n.t}</b><small>${h?"¡Listo! Ya lo usaste.":n.d}</small></span>
   ${h?`<span class="nov-ok">Hecho</span>`:`<button class="btn small" data-act="${n.a}"${n.v?` data-v="${n.v}"`:""}>${n.b}</button>`}</div>`; }).join("");
@@ -1730,7 +1762,8 @@ function novedadesCard(){
     <div class="nov-h"><span class="nov-badge">✨ Novedades</span><button class="icon-btn" data-act="novOk" aria-label="Cerrar novedades">✕</button></div>
     <h2 class="nov-t">Pecuniae Ratio tiene cosas nuevas</h2>
     ${hechas?`<div class="nov-prog"><div class="bar"><span style="width:${(hechas/lista.length*100).toFixed(0)}%"></span></div><small>${hechas} de ${lista.length} probadas</small></div>`:""}
-    <div class="nov-list">${filasNovedades(novedadesSinVer())}</div>
+    ${(()=>{ const ord=ordenNov(lista), MAX=5; if(ord.length<=MAX+1 || S.novTodas) return `<div class="nov-list">${filasNovedades(ord)}</div>`;
+      return `<div class="nov-list">${filasNovedades(ord.slice(0,MAX))}</div><button class="btn ghost small nov-mas" data-act="novMas">Ver ${ord.length-MAX} más ▾</button>`; })()}
     <button class="btn primary" data-act="novOk" style="width:100%;margin-top:12px">Entendido</button>
   </section>`;
 }
@@ -1822,6 +1855,9 @@ async function accionesNuevas(act,b,e,m){
     case "subEditar": { const id=b.dataset.id; S.open.add("g:"+id); render(); setTimeout(()=>{ const el=document.querySelector(`[data-fold="g:${id}"]`); if(el) el.scrollIntoView({behavior:"smooth",block:"center"}); },60); return true; }
     case "vozFoco": S.dlg=null; renderModal(); S.tab="hoy"; render(); setTimeout(()=>{ const i=$("#vozTxt"); if(i){ i.scrollIntoView({behavior:"smooth",block:"center"}); i.focus({preventScroll:true}); } },60); return true;
     case "subVer": S.dlg=null; renderModal(); S.tab="gastos"; render(); setTimeout(()=>{ const h=[...document.querySelectorAll("#app h2")].find(x=>x.textContent.startsWith("Suscripciones")); if(h) h.scrollIntoView({behavior:"smooth",block:"start"}); },60); return true;
+    case "tema": cambiarTema(); try{ localStorage.setItem("pr:temaUsado","1"); }catch(_){} if(S.tab==="hoy" && $(".nov")) render(); return true;
+    case "estado": { const el=$("#status"), c=el?el.className:""; toast(c.includes("st-saving") ? "🟡 Estoy guardando tus cambios… La bolita se pone verde y quieta cuando termino." : c.includes("st-bad") ? `🔴 ${estadoTxt}` : c.includes("st-warn") ? `⚪ ${estadoTxt}` : "🟢 Todo guardado en tu cuenta. Cuando la bolita titila en amarillo, estoy guardando.");
+      try{ if(!localStorage.getItem("pr:bolita")){ localStorage.setItem("pr:bolita","1"); if(S.tab==="hoy" && $(".nov")) render(); } }catch(_){} return true; }
     case "instalar": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"instalar"}; renderModal(); return true;
     case "instLuego": try{ localStorage.setItem(LUEGO_KEY,String(Date.now())); }catch(_){} render(); toast("Está bien. Cuando quieras, está en el menú de tu foto: 📲 Instalar en mi celular."); return true;
     case "instUnToque": { const ok=await instalarUnToque(); if(ok){ S.dlg=null; renderModal(); render(); toast("¡Listo! Ya tienes la app en tu celular 🐜"); } else renderModal(); return true; }
@@ -1846,6 +1882,7 @@ async function accionesNuevas(act,b,e,m){
       if(!S.perfil.vozUsada){ S.perfil.vozUsada=todayISO(); savePerfil(); }
       registrarMov(m,{fecha,tipo:r.tipo,monto:r.monto,desc:r.desc,cat:r.cat,medio:r.medio,cuotas:r.cuotas}); return true; }
     case "novOk": S.perfil.novedades=NOVEDADES_ID; savePerfil(); { const el=$(".nov"); if(el){ el.classList.add("nov-sale"); setTimeout(render,230); } else render(); } toast("Puedes volver a verlas en el menú de tu foto, en ✨ Novedades."); return true;
+    case "novMas": S.novTodas=true; render(); return true;
     case "novVer": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"novedades"}; renderModal(); return true;
     case "clave": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"clave"}; renderModal(); return true;
     case "claveLen": { const n=+b.dataset.v===6?6:4; S.dlg=null; renderModal(); flujoCrear(n,{alCancelar:()=>{ S.dlg={kind:"clave"}; renderModal(); }}); return true; }
