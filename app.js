@@ -5,6 +5,7 @@ import { initializeFirestore, getFirestore, persistentLocalCache, persistentMult
 import { ahorroEn, proyectarAhorro, metaEstado, TIPOS_AHORRO, TIPOS_META, toDate, addMonths } from "./ahorros.js";
 import { abrirTeclado, cerrarTeclado, crearPin, pinCorrecto, tecladoAbierto, limpiarFallos, mensajeTeclado } from "./clave.js";
 import { interpretar, aprenderDe } from "./frase.js";
+import { NAVEGADORES, navegadorActual, puedeUnToque, instalarUnToque, estaInstalada, yaLaInstalo, esCelular } from "./instalar.js";
 import { prestamoEstado, venceEnMes, iso2t, addMonthsISO } from "./prestamos.js";
 import { mIdx, idxKey, daysIn, FREQ, factor, tasaMes, cardState, creditState, consejos, ordenPago, CLASES_ROTATIVAS, TIPOS_CUOTAS, cuotaNeta, tasaDesdeCuota } from "./engine.js";
 
@@ -301,7 +302,7 @@ function render(){
   document.querySelectorAll("#tabs button").forEach(b=>b.setAttribute("aria-selected", String(b.dataset.tab===S.tab)));
   const m = M(), c = calc(m);
   const views = {hoy:vHoy, ingresos:vIngresos, gastos:vGastos, tarjetas:vTarjetas, creditos:vCreditos, prestamos:vPrestamos, ahorros:vAhorros, metas:vMetas, hormiga:vHormiga, historial:vHistorial};
-  $("#app").innerHTML = (S.tab==="hoy" ? novedadesCard() + guiaBanner() : "") + (views[S.tab]||vHoy)(m,c);
+  $("#app").innerHTML = (S.tab==="hoy" ? novedadesCard() + instalarCard() + guiaBanner() : "") + (views[S.tab]||vHoy)(m,c);
   renderMenu(); renderModal();
 }
 function renderMonthSel(){
@@ -318,6 +319,7 @@ function renderMenu(){
     ${S.perfil.ultimaCopia?"":`<p class="subtle" style="margin:0 0 6px">Consejo: descarga de vez en cuando una copia de seguridad.</p>`}
     ${S.installEvt?`<button class="btn" data-act="install">Instalar la app</button>`:""}
     ${ios?`<p class="subtle" style="margin:0 0 4px">Para instalarla en iPhone: toca Compartir y luego “Agregar a inicio”.</p>`:""}
+    ${estaInstalada()?"":`<button class="btn" data-act="instalar">📲 Instalar en mi celular</button>`}
     <button class="btn" data-act="novVer">✨ Novedades</button>
     <button class="btn" data-act="cal">📅 Pagos a mi calendario</button>
     <button class="btn" data-act="clave">🔒 Clave de acceso${S.perfil.pin?` <small class="subtle">· activada</small>`:""}</button>
@@ -555,6 +557,8 @@ function vozInterpretar(){
   const o=v.over;
   if(o.tipo){ if(o.tipo!==r.tipo){ r.tipo=o.tipo; if(!o.cat) r.cat = r.tipo==="ingreso"?(CAT_ING.includes(r.cat)?r.cat:"Otro"):r.tipo==="hormiga"?(CAT_HORMIGA.includes(r.cat)?r.cat:"Otro"):(CAT_MOV.includes(r.cat)?r.cat:"Otros"); } }
   if(o.cat) r.cat=o.cat;
+  if(o.monto) r.monto=o.monto;
+  if(o.desc!=null) r.desc=o.desc;
   if(o.medio!=null){ r.medio=o.medio; r.medioDuda=false; r.medioNombre = o.medio==="efectivo"?"":((S.perfil.tarjetas.find(t=>t.id===o.medio)||{}).nombre||""); }
   if(r.tipo==="ingreso"){ r.medio="efectivo"; r.cuotas=1; }
   if(r.medio==="efectivo") r.cuotas=1;
@@ -579,13 +583,13 @@ function vozChips(){
   if(!v.texto.trim()) return `<p class="subtle voz-tip">${SR && !S.vozSinMic ? "Toca el micrófono y dilo, o escríbelo." : "Escríbelo, o toca el 🎤 de tu teclado para dictarlo."} La app entiende el valor, la categoría y cómo pagaste.</p>`;
   const r=vozInterpretar(), hoy=todayISO();
   const items=[];
-  items.push(["monto", r.monto?`💰 ${money(r.monto)}`:"💰 ¿Cuánto?", r.monto?"":"falta", ""]);
+  items.push(["monto", r.monto?`💰 ${money(r.monto)}`:"💰 ¿Cuánto?", r.monto?"":"falta", "vozMonto"]);
   items.push(["tipo", `${V_ICON[r.tipo]} ${V_TIPO[r.tipo]}`, "", "vozTipo"]);
   items.push(["cat", `${C_ICON[r.cat]||"🏷️"} ${esc(r.cat)}`, "", "vozCat"]);
   if(r.tipo!=="ingreso") items.push(["medio", r.medio==="efectivo"?"💵 Efectivo":`💳 ${esc(r.medioNombre||"Tarjeta")}${r.medioDuda?" ?":""}`, r.medioDuda?"duda":"", "vozMedio"]);
   if(r.cuotas>1 && r.medio!=="efectivo" && r.tipo==="gasto") items.push(["cuotas", `🧾 ${r.cuotas} cuotas`, "", ""]);
   if(r.fecha && r.fecha!==hoy) items.push(["fecha", `📅 ${r.fecha===(()=>{const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().slice(0,10);})()?"Ayer":fechaCorta(r.fecha)}`, "", ""]);
-  if(r.desc) items.push(["desc", `“${esc(r.desc)}”`, "txt", ""]);
+  items.push(["desc", r.desc?`“${esc(r.desc)}”`:"✏️ Descripción", "txt", "vozDesc"]);
   const prev=v.prev||{}, now={};
   const html = items.map(([k,label,cl,act],i)=>{ now[k]=label; const nuevo = prev[k]!==label;
     const tag = act?"button":"span";
@@ -594,11 +598,14 @@ function vozChips(){
   let picker="";
   if(v.abierto==="cat"){ const list = r.tipo==="ingreso"?CAT_ING:r.tipo==="hormiga"?CAT_HORMIGA:CAT_MOV;
     picker=`<div class="vpick">${list.map(x=>`<button class="vopt ${x===r.cat?"on":""}" data-act="vozCatSel" data-v="${esc(x)}">${C_ICON[x]||""} ${esc(x)}</button>`).join("")}</div>`; }
+  if(v.abierto==="monto") picker=`<div class="vpick vedit"><label>Valor<input id="vozMontoIn" inputmode="numeric" autocomplete="off" value="${r.monto?numTxt(r.monto):""}" placeholder="Ej: 15.000"></label><button class="btn primary small" data-act="vozMontoOk">Listo</button></div>`;
+  if(v.abierto==="desc") picker=`<div class="vpick vedit"><label>Descripción<input id="vozDescIn" autocomplete="off" value="${esc(r.desc||"")}" placeholder="Ej: almuerzo"></label><button class="btn primary small" data-act="vozDescOk">Listo</button></div>`;
   if(v.abierto==="medio"){ picker=`<div class="vpick"><button class="vopt ${r.medio==="efectivo"?"on":""}" data-act="vozMedioSel" data-v="efectivo">💵 Efectivo, Nequi o débito</button>${S.perfil.tarjetas.map(t=>`<button class="vopt ${r.medio===t.id?"on":""}" data-act="vozMedioSel" data-v="${t.id}">💳 ${esc(t.nombre||"Tarjeta")}</button>`).join("")}</div>`; }
   return `<div class="vchips" aria-live="polite">${html}</div>${picker}
-    <div class="voz-acc"><button class="btn primary" data-act="vozOk" ${r.monto?"":"disabled"}>${r.monto?`Anotar ${money(r.monto)}`:"Falta el valor"}</button><button class="btn ghost" data-act="vozBorrar">Borrar</button></div>`;
+    <div class="voz-acc"><button class="btn primary ${r.monto?"":"falta-v"}" data-act="${r.monto?"vozOk":"vozMonto"}">${r.monto?`Anotar ${money(r.monto)}`:"Escribe el valor"}</button><button class="btn ghost" data-act="vozBorrar">Borrar</button></div>`;
 }
-function vozPintar(){ const el=$("#vozChips"); if(el) el.innerHTML=vozChips(); }
+function vozPintar(){ const el=$("#vozChips"); if(el) el.innerHTML=vozChips();
+  const f=$("#vozMontoIn")||$("#vozDescIn"); if(f){ f.focus(); f.select(); } }
 function vozEscuchar(){
   const v=vozEstado();
   if(v.escuchando && rec){ rec.stop(); return; }
@@ -1220,6 +1227,7 @@ const AYUDA = [
  {id:"compracuotas", t:"Compras a cuotas desde Hoy", h:`<p>Si pagas algo con tarjeta de crédito en Hoy, elige la tarjeta en “Pagado con” y aparece el campo <b>Cuotas</b>.</p><ul><li><b>1 cuota:</b> se descuenta de lo que puedes gastar hoy y se suma a la tarjeta.</li><li><b>2 o más cuotas:</b> no se descuenta hoy completo. Queda como compra en la tarjeta y cada mes se aparta solo la cuota, con sus intereses.</li></ul><p>Si borras el movimiento, también se quita la compra de la tarjeta.</p>`},
  {id:"topes", t:"¿En qué se va tu plata? y topes", h:`<p>En la pestaña <b>Gastos</b>, abajo, ves en qué se va tu plata este mes: gastos fijos por categoría, lo del día a día, los pagos de deudas y el ahorro.</p><p>En <b>Topes del día a día</b> le pones un máximo al mes a una categoría, por ejemplo $300.000 en comida. Cuando llegas al 80% te aviso en Hoy, y si te pasas sale en rojo. Para quitar un tope, borra el valor.</p>`},
  {id:"calendario", t:"Pagos en tu calendario", h:`<p>En Hoy, en <b>Próximos pagos</b>, o en el menú de tu foto, toca <b>📅 A mi calendario</b>.</p><ul><li><b>Descargar todos:</b> baja un archivo con todas tus fechas. En iPhone se abre en Calendario; en Android o computador ábrelo con tu calendario.</li><li><b>Google Calendar:</b> agrega una fecha a la vez.</li></ul><p>Las tarjetas y créditos se repiten cada mes y te avisan el día anterior. Si cambias una fecha en la app, vuelve a agregarla.</p>`},
+ {id:"instalar", t:"Tener la app como ícono", h:`<p>Puedes tener Pecuniae Ratio en tu pantalla de inicio, con el ícono de la hormiga, y abrirla a pantalla completa como cualquier app. No ocupa casi espacio y no hay que descargarla de ninguna tienda.</p><p>Toca <b>📲 Instalar en mi celular</b> en el menú de tu foto: te muestro el paso a paso de tu navegador (Chrome, Samsung, Brave, Firefox, Edge, Opera, Xiaomi o iPhone). En algunos se instala con un solo toque.</p><p>Tus datos son los mismos: entras con tu cuenta de Google.</p>`},
  {id:"suscripciones", t:"Suscripciones y fechas de cobro", h:`<p>En <b>Gastos</b> está la sección <b>Suscripciones</b>. Toca Netflix, Spotify, el plan del celular o la que tengas, escribe el valor y el <b>día de cobro</b>.</p><ul><li>Te digo cuánto pagas al mes y al año en suscripciones.</li><li>Unos días antes de cada cobro te aviso en Hoy, en Próximos pagos.</li><li>Con <b>📅 A mi calendario</b> las pasas al calendario del celular, y ese sí te suena aunque no abras la app.</li></ul><p>El día de cobro sirve para cualquier gasto fijo: arriendo, servicios, administración. Si el gasto es cada 2, 3, 6 o 12 meses (SOAT, matrícula), pon la fecha del próximo cobro y lo calculo de ahí en adelante.</p><p>Las suscripciones ya son parte de tus gastos fijos: no se cuentan dos veces.</p>`},
  {id:"voz", t:"Dímelo y lo anoto", h:`<p>En Hoy, escribe o di lo que gastaste como se lo dirías a un amigo:</p><ul><li>“gasté 15 mil en almuerzo con la Nu”</li><li>“tinto 2.500” · “ayer taxi 18 mil”</li><li>“me pagaron 80 lucas de domicilios”</li><li>“tenis de 250 mil a 6 cuotas con tarjeta”</li></ul><p>Mientras hablas o escribes aparecen fichitas con lo que entendí: el valor, si es gasto, hormiga o ingreso, la categoría y cómo pagaste. Toca una fichita para cambiarla y luego <b>Anotar</b>.</p><p>Entiendo “mil”, “lucas”, “palos”, “millón y medio”, “ayer”, “antier” y el nombre de tus tarjetas. Y aprendo: si anotas “arriendo moto” en Transporte, la próxima vez lo pongo ahí solo.</p><p>El botón de micrófono aparece en los navegadores que lo permiten (Chrome, Edge, Safari). En los demás, toca el 🎤 de tu teclado y dicta en el cuadro: funciona igual. El dictado lo hace tu navegador (en Chrome, con el servicio de voz de Google); entender la frase y anotarla pasa en tu celular.</p>`},
  {id:"clave", t:"Clave de acceso", h:`<p>Es opcional. En el menú de tu foto toca <b>🔒 Clave de acceso</b>, elige si la quieres de 4 o de 6 números y escríbela dos veces.</p><ul><li>Te la pido cada vez que abres la app y si la dejas más de ${MIN_FUERA} minutos sin usar.</li><li>Si te equivocas 5 veces seguidas, toca esperar un momento antes de intentar otra vez.</li><li><b>¿La olvidaste?</b> Tócalo en el teclado, confirma con tu cuenta de Google y creas una nueva. Tus datos no se tocan.</li></ul><p>La clave protege la app si alguien toma tu celular. No se guarda tal cual: solo un código cifrado que nadie puede leer, ni siquiera quien administra la app.</p>`},
@@ -1248,8 +1256,8 @@ function renderModal(){
   document.body.classList.toggle("modal-open", abierto);
   if(!abierto){ el.innerHTML=""; return; }
   if(S.help){ renderHelpSheet(el); return; }
-  const d=S.dlg, titulo={novedades:"✨ Novedades",clave:"Clave de acceso",privAcepta:"Antes de seguir: tu privacidad",privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
-  const cuerpo={novedades:()=>NOVEDADES_V.slice(0,2).map((v,i)=>`${i?`<p class="subtle" style="margin:16px 0 4px">Antes:</p>`:""}<div class="nov-list">${filasNovedades(v.items)}</div>`).join(""),clave:dlgClave,privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
+  const d=S.dlg, titulo={instalar:"📲 Instalar en mi celular",novedades:"✨ Novedades",clave:"Clave de acceso",privAcepta:"Antes de seguir: tu privacidad",privacidad:"Aviso de privacidad",restaurar:"Restaurar una copia",calendario:"Agregar a mi calendario"}[d.kind]||"";
+  const cuerpo={instalar:dlgInstalar,novedades:()=>NOVEDADES_V.slice(0,2).map((v,i)=>`${i?`<p class="subtle" style="margin:16px 0 4px">Antes:</p>`:""}<div class="nov-list">${filasNovedades(v.items)}</div>`).join(""),clave:dlgClave,privAcepta:dlgPrivAcepta,privacidad:()=>PRIVACIDAD_HTML,restaurar:dlgRestaurar,calendario:dlgCalendario}[d.kind];
   el.innerHTML = `<div class="modal"><div class="sheet" role="dialog" aria-modal="true" aria-label="${titulo}">
     <div class="sheet-h"><h2>${titulo}</h2>${d.kind==="privAcepta"?"":`<button class="icon-btn" data-act="helpClose" aria-label="Cerrar">✕</button>`}</div>
     <div class="sheet-b">${cuerpo?cuerpo(d):""}</div></div></div>`;
@@ -1265,6 +1273,35 @@ const PRIVACIDAD_HTML = `<div class="hq-b">
   <p><b>Si dejas de usarla.</b> Tus datos quedan guardados hasta que los borres.</p>
   <p class="subtle">Al entrar con Google aceptas este aviso.</p>
 </div>`;
+
+// ---------- Instalar como ícono ----------
+const LUEGO_KEY="pr:instalarLuego";
+function instalarCard(){
+  if(!esCelular() || yaLaInstalo() || S.guia) return "";
+  try{ const t=+localStorage.getItem(LUEGO_KEY)||0; if(Date.now()-t < 7*86400000) return ""; }catch(_){}
+  return `<section class="panel inst" aria-label="Instalar la app">
+    <div class="inst-row"><img class="inst-logo" src="${LOGO}" alt="" aria-hidden="true">
+      <div><h2 class="inst-t">¿Quieres la app como ícono en tu celular?</h2>
+      <p class="hint" style="margin:2px 0 0">Ábrela con un toque, a pantalla completa, sin escribir el enlace.</p></div></div>
+    <div class="gbtns" style="margin:12px 0 0"><button class="btn primary" data-act="instalar">Sí, muéstrame cómo</button><button class="btn ghost" data-act="instLuego">Ahora no</button></div>
+  </section>`;
+}
+function dlgInstalar(d){
+  const actual=navegadorActual(), abierto=d.abierto||actual;
+  const lista=[...NAVEGADORES].sort((a,b)=>(b.id===actual)-(a.id===actual));
+  const yo=NAVEGADORES.find(n=>n.id===actual);
+  const top = puedeUnToque() ? `<button class="btn primary big inst-uno" data-act="instUnToque">📲 Instalar con un toque</button><p class="subtle" style="text-align:center;margin:6px 0 14px">O sigue los pasos de tu navegador:</p>` : "";
+  const pc = !esCelular() ? `<p class="alert" style="margin:0 0 12px">En el <b>computador</b>, con Chrome o Edge: busca el ícono de instalar 🖥️ a la derecha de la barra de la dirección y toca <b>Instalar</b>. Los pasos de abajo son para el celular.</p>` : "";
+  return `${pc}${top}
+    ${yo&&esCelular()?`<p class="subtle" style="margin:0 0 10px">Estás usando <b>${yo.nombre}</b>. Toca otro si usas uno distinto.</p>`:`<p class="subtle" style="margin:0 0 10px">Toca el navegador que usas:</p>`}
+    <div class="navs">${lista.map(n=>`<div class="nav-it ${n.id===abierto?"open":""}" data-nav="${n.id}">
+      <button class="nav-h" data-act="instNav" data-v="${n.id}" aria-expanded="${n.id===abierto}"><span class="nav-logo" aria-hidden="true">${n.logo}</span><span class="nav-n">${n.nombre}</span>${n.id===actual?`<span class="nav-tuyo">Tu navegador</span>`:""}<span class="nav-ch" aria-hidden="true">›</span></button>
+      <div class="nav-b"><div class="nav-in"><ol class="nav-pasos">${n.pasos.map((p,i)=>`<li style="--i:${i}"><span class="nav-num">${i+1}</span><span>${p}</span></li>`).join("")}</ol>${n.nota?`<p class="subtle nav-nota">💡 ${n.nota}</p>`:""}</div></div>
+    </div>`).join("")}</div>
+    <p class="subtle" style="margin-top:14px">Después ábrela desde el ícono de la hormiga 🐜. Tus datos son los mismos: entras con tu misma cuenta de Google.</p>`;
+}
+document.addEventListener("pr-instalable",()=>{ if(S.dlg && S.dlg.kind==="instalar") renderModal(); });
+document.addEventListener("pr-instalada",()=>{ if(S.dlg && S.dlg.kind==="instalar"){ S.dlg=null; renderModal(); } if(S.user) render(); toast("¡Listo! Ya tienes la app en tu celular 🐜"); });
 
 // ---------- Clave de acceso ----------
 function pedirClave(){
@@ -1785,10 +1822,21 @@ async function accionesNuevas(act,b,e,m){
     case "subEditar": { const id=b.dataset.id; S.open.add("g:"+id); render(); setTimeout(()=>{ const el=document.querySelector(`[data-fold="g:${id}"]`); if(el) el.scrollIntoView({behavior:"smooth",block:"center"}); },60); return true; }
     case "vozFoco": S.dlg=null; renderModal(); S.tab="hoy"; render(); setTimeout(()=>{ const i=$("#vozTxt"); if(i){ i.scrollIntoView({behavior:"smooth",block:"center"}); i.focus({preventScroll:true}); } },60); return true;
     case "subVer": S.dlg=null; renderModal(); S.tab="gastos"; render(); setTimeout(()=>{ const h=[...document.querySelectorAll("#app h2")].find(x=>x.textContent.startsWith("Suscripciones")); if(h) h.scrollIntoView({behavior:"smooth",block:"start"}); },60); return true;
+    case "instalar": S.menu=false; renderMenu(); S.help=null; S.dlg={kind:"instalar"}; renderModal(); return true;
+    case "instLuego": try{ localStorage.setItem(LUEGO_KEY,String(Date.now())); }catch(_){} render(); toast("Está bien. Cuando quieras, está en el menú de tu foto: 📲 Instalar en mi celular."); return true;
+    case "instUnToque": { const ok=await instalarUnToque(); if(ok){ S.dlg=null; renderModal(); render(); toast("¡Listo! Ya tienes la app en tu celular 🐜"); } else renderModal(); return true; }
+    case "instNav": { const id=b.dataset.v; if(S.dlg) S.dlg.abierto=id;
+      document.querySelectorAll(".nav-it").forEach(el=>{ const on = el.dataset.nav===id && !el.classList.contains("open"); el.classList.toggle("open", on); const h=el.querySelector(".nav-h"); if(h) h.setAttribute("aria-expanded", on); });
+      const el=document.querySelector(`.nav-it[data-nav="${id}"]`); if(el && el.classList.contains("open")) setTimeout(()=>el.scrollIntoView({behavior:"smooth",block:"nearest"}),220);
+      return true; }
     case "vozMic": vozEscuchar(); return true;
     case "vozTipo": { const v=vozEstado(), r=vozInterpretar(), ord=["gasto","hormiga","ingreso"]; v.over.tipo=ord[(ord.indexOf(r.tipo)+1)%3]; delete v.over.cat; v.abierto=""; vozPintar(); return true; }
     case "vozCat": { const v=vozEstado(); v.abierto = v.abierto==="cat"?"":"cat"; vozPintar(); return true; }
     case "vozCatSel": { const v=vozEstado(); v.over.cat=b.dataset.v; v.abierto=""; vozPintar(); return true; }
+    case "vozMonto": { const v=vozEstado(); v.abierto = v.abierto==="monto"?"":"monto"; vozPintar(); return true; }
+    case "vozMontoOk": { const v=vozEstado(), n=parseMoney(($("#vozMontoIn")||{}).value); if(n>0) v.over.monto=n; else delete v.over.monto; v.abierto=""; vozPintar(); return true; }
+    case "vozDesc": { const v=vozEstado(); v.abierto = v.abierto==="desc"?"":"desc"; vozPintar(); return true; }
+    case "vozDescOk": { const v=vozEstado(); v.over.desc=(($("#vozDescIn")||{}).value||"").trim(); v.abierto=""; vozPintar(); return true; }
     case "vozMedio": { const v=vozEstado(); v.abierto = v.abierto==="medio"?"":"medio"; vozPintar(); return true; }
     case "vozMedioSel": { const v=vozEstado(); v.over.medio=b.dataset.v; v.abierto=""; vozPintar(); return true; }
     case "vozBorrar": { if(rec&&S.voz&&S.voz.escuchando) rec.stop(); S.voz={texto:"",over:{},prev:{},abierto:""}; const i=$("#vozTxt"); if(i){ i.value=""; i.focus(); } vozPintar(); return true; }
@@ -2030,8 +2078,9 @@ function flushRender(){
   if(key){ const el=document.querySelector(key); if(el){ if(val!==null && el.value!==val && !(el.dataset.b && el.dataset.b.includes("|money"))) el.value=val; el.focus(); try{ const l=el.value.length; el.setSelectionRange(l,l); }catch(e){} } }
 }
 // Si la app estuvo más de unos minutos en segundo plano, vuelve a pedir la clave
-document.addEventListener("input",e=>{ if(e.target.id==="vozTxt"){ const v=vozEstado(); if(!e.target.value.trim()) v.over={}; v.texto=e.target.value; v.abierto=""; vozPintar(); } });
-document.addEventListener("keydown",e=>{ if(e.target.id==="vozTxt" && e.key==="Enter"){ e.preventDefault(); const ok=$('[data-act="vozOk"]'); if(ok && !ok.disabled) ok.click(); } });
+document.addEventListener("input",e=>{ if(e.target.id==="vozTxt"){ const v=vozEstado(); if(!e.target.value.trim()) v.over={}; else { delete v.over.monto; delete v.over.desc; } v.texto=e.target.value; v.abierto=""; vozPintar(); } });
+document.addEventListener("keydown",e=>{ if((e.target.id==="vozMontoIn"||e.target.id==="vozDescIn") && e.key==="Enter"){ e.preventDefault(); const b=$(e.target.id==="vozMontoIn"?'[data-act="vozMontoOk"]':'[data-act="vozDescOk"]'); if(b) b.click(); return; }
+  if(e.target.id==="vozTxt" && e.key==="Enter"){ e.preventDefault(); const ok=$('[data-act="vozOk"]'); if(ok && !ok.disabled) ok.click(); } });
 let ocultoEn=0;
 document.addEventListener("visibilitychange",()=>{
   if(document.hidden){ ocultoEn=Date.now(); return; }

@@ -81,11 +81,14 @@ const EFECTIVO = ["efectivo","en efectivo","cash","nequi","daviplata","transfere
 
 const hay = (txt, palabra) => new RegExp(`(^|[^a-z0-9])${palabra.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(txt);
 
+// "15 000" o "1 500 000" (así dicta Chrome los miles) → "15000"
+const juntarMiles = s => s.replace(/(^|[^\d.,])(\d{1,3})((?: \d{3})+)(?![\d])/g, (m, a, b, c) => a + b + c.replace(/ /g, ""));
+
 // ---------- Interpretar ----------
 // ctx: { tarjetas:[{id,nombre}], aprendido:{palabra:{tipo,cat}}, hoy:"AAAA-MM-DD" }
 export function interpretar(texto, ctx = {}){
   const original = String(texto || "").trim();
-  const t = norm(original).replace(/[¿?¡!;:"“”()]/g, " ").replace(/\s+/g, " ").trim();
+  const t = juntarMiles(norm(original).replace(/[\u00a0\u202f\u2009]/g, " ")).replace(/[¿?¡!;:"“”()]/g, " ").replace(/\s+/g, " ").trim();
   const r = { texto:original, monto:0, tipo:"gasto", cat:"", medio:"efectivo", medioNombre:"", medioDuda:false, cuotas:1, fecha:ctx.hoy || "", desc:"", seguro:{} };
   if(!t) return r;
   // Cuotas: "a 6 cuotas", "en seis cuotas", "6 cuotas"
@@ -122,7 +125,10 @@ export function interpretar(texto, ctx = {}){
   // Categoría: primero lo que la persona ya ha anotado antes
   const ap = ctx.aprendido || {};
   const palabras = resto.split(" ").filter(w => w.length > 2 && !RELLENO.has(w));
-  for(const w of palabras){ const a = ap[w]; if(a && (r.tipo !== "ingreso" ? a.tipo !== "ingreso" : a.tipo === "ingreso")){ r.cat = a.cat; if(r.tipo !== "ingreso") r.tipo = a.tipo; r.seguro.cat = "aprendido"; break; } }
+  const enDiccionario = [...HORMIGA, ...GASTO, ...ING_CAT].some(([, ks]) => ks.some(k => hay(tt, k)));
+  for(const w of palabras){ const a = ap[w]; if(!a) continue;
+    if(enDiccionario && a.n < 2) continue;            // una sola vez no le gana a lo obvio ("almuerzo" es comida)
+    if(r.tipo !== "ingreso" ? a.tipo !== "ingreso" : a.tipo === "ingreso"){ r.cat = a.cat; if(r.tipo !== "ingreso") r.tipo = a.tipo; r.seguro.cat = "aprendido"; break; } }
   if(!r.cat){
     if(r.tipo === "ingreso"){ for(const [cat, ks] of ING_CAT) if(ks.some(k => hay(tt, k))){ r.cat = cat; break; } r.cat = r.cat || "Otro"; }
     else {
@@ -157,10 +163,13 @@ export function interpretar(texto, ctx = {}){
 
 // Aprende de lo que la persona ya anotó: la palabra principal de la descripción → categoría
 export function aprenderDe(movs){
-  const ap = {};
+  const cuenta = {};
   for(const x of movs){
-    if(!x.desc || !x.cat) continue;
-    for(const w of norm(x.desc).split(/\s+/)) if(w.length > 2 && !RELLENO.has(w)) ap[w] = { tipo:x.tipo, cat:x.cat };
+    if(!x.desc || !x.cat || norm(x.desc) === norm(x.cat)) continue;   // el botón de hormiga guarda la categoría como descripción: eso no enseña nada
+    for(const w of new Set(norm(x.desc).split(/\s+/))) if(w.length > 2 && !RELLENO.has(w)){
+      const k = x.tipo + "|" + x.cat; (cuenta[w] = cuenta[w] || {})[k] = (cuenta[w][k] || 0) + 1; }
   }
+  const ap = {};
+  for(const [w, c] of Object.entries(cuenta)){ const [k, n] = Object.entries(c).sort((a, b) => b[1] - a[1])[0]; const [tipo, cat] = k.split("|"); ap[w] = { tipo, cat, n }; }
   return ap;
 }
