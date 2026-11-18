@@ -7,7 +7,7 @@ Vas a usar dos servicios gratuitos:
 
 No necesitas tarjeta de crédito ni instalar programas. Hazlo desde un computador; toma más o menos una hora la primera vez.
 
-Antes de empezar, **descomprime el archivo .zip**. Debes ver estos archivos: `index.html`, `app.js`, `engine.js`, `ahorros.js`, `prestamos.js`, `clave.js`, `favicon.ico`, `firebase-config.js`, `sw.js`, `manifest.webmanifest`, `firestore.rules`, esta guía y una carpeta `icons`.
+Antes de empezar, **descomprime el archivo .zip**. Debes ver estos archivos: `index.html`, `app.js`, `engine.js`, `ahorros.js`, `prestamos.js`, `clave.js`, `frase.js`, `favicon.ico`, `firebase-config.js`, `sw.js`, `manifest.webmanifest`, `firestore.rules`, esta guía y una carpeta `icons`.
 
 > **¿Ya habías publicado la versión anterior?** Ve directo a la sección *Actualizar a una versión nueva* al final.
 
@@ -211,6 +211,7 @@ Estos límites los fija Google y GitHub y pueden cambiar con el tiempo. En **Fir
 | `ahorros.js` | Los cálculos de ahorros, CDT y metas. |
 | `prestamos.js` | Los cálculos de préstamos con personas (le debo / me deben). |
 | `clave.js` | La clave de acceso opcional y su teclado (solo guarda un código cifrado, nunca la clave). |
+| `frase.js` | Entiende frases como “almuerzo 15 mil con la Nu” para anotar rápido (todo pasa en el celular). |
 | `firebase-config.js` | La conexión con tu proyecto de Firebase (lo único que debes editar). |
 | `firestore.rules` | Las reglas de seguridad que pegas en Firebase (no hace falta subirlo a GitHub, pero no estorba). |
 | `sw.js` | Permite que la app abra sin internet y se instale. |
